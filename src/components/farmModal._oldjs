@@ -1,0 +1,183 @@
+const { ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const supabase = require('../database/supabase');
+
+// Armazenamento temporário para farms em processo
+const farmsEmProcesso = new Map();
+
+async function processarFarm(interaction, farmId, acao) {
+    try {
+        if (acao === 'selecionar') {
+            // Usuário selecionou o tipo de farm
+            const tipoFarm = interaction.values[0];
+            
+            // Criar ID temporário único
+            const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Salvar temporariamente
+            farmsEmProcesso.set(tempId, {
+                tipo: tipoFarm,
+                usuario: interaction.user.id,
+                canal: interaction.channel.id,
+                timestamp: Date.now()
+            });
+            
+            // Obter informações do membro
+            const { data: membro } = await supabase
+                .from('membros')
+                .select('id, nome')
+                .eq('discord_id', interaction.user.id)
+                .single();
+            
+            if (!membro) {
+                return interaction.reply({
+                    content: '❌ Você precisa estar registrado para farmar!',
+                    flags: 64
+                });
+            }
+            
+            // Criar embed
+            const embed = new EmbedBuilder()
+                .setTitle('📊 REGISTRO DE FARM')
+                .setDescription(`**${membro.nome}** selecionou: **${tipoFarm}**`)
+                .setColor(0xFFA500)
+                .addFields(
+                    { name: '📝 Instruções:', value: 'Clique no botão abaixo para informar a quantidade farmada.' },
+                    { name: '🆔 ID Temporário:', value: tempId },
+                    { name: '⏰ Válido por:', value: '5 minutos' }
+                )
+                .setFooter({ text: `Usuário: ${interaction.user.username}` })
+                .setTimestamp();
+
+            const botoes = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`editar_farm_${tempId}`)
+                        .setLabel('INFORMAR QUANTIDADE')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('💰'),
+                    new ButtonBuilder()
+                        .setCustomId(`finalizar_farm_${tempId}`)
+                        .setLabel('CANCELAR')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('❌')
+                );
+
+            await interaction.reply({
+                embeds: [embed],
+                components: [botoes]
+            });
+
+        } else if (acao === 'finalizar') {
+            // Cancelar farm
+            const tempId = farmId;
+            farmsEmProcesso.delete(tempId);
+            
+            await interaction.update({
+                content: '❌ Farm cancelado.',
+                components: [],
+                embeds: []
+            });
+        }
+    } catch (error) {
+        console.error('Erro no processamento de farm:', error);
+        if (interaction.replied || interaction.deferred) {
+            await interaction.editReply({
+                content: '❌ Erro ao processar farm.',
+                components: []
+            });
+        } else {
+            await interaction.reply({
+                content: '❌ Erro ao processar farm.',
+                flags: 64
+            });
+        }
+    }
+}
+
+// Função auxiliar para salvar farm no banco (chamada do modal)
+async function salvarFarmNoBanco(tempId, quantidade, interaction) {
+    try {
+        const farmTemp = farmsEmProcesso.get(tempId);
+        if (!farmTemp) {
+            throw new Error('Farm expirado ou não encontrado');
+        }
+        
+        // Verificar se é o mesmo usuário
+        if (farmTemp.usuario !== interaction.user.id) {
+            throw new Error('Você não pode editar este farm');
+        }
+        
+        // Verificar se expirou (5 minutos)
+        if (Date.now() - farmTemp.timestamp > 5 * 60 * 1000) {
+            farmsEmProcesso.delete(tempId);
+            throw new Error('Farm expirado. Por favor, inicie um novo registro.');
+        }
+        
+        // Obter semana atual
+        const data = new Date();
+        const semanaNumero = getWeekNumber(data);
+        const ano = data.getFullYear();
+        
+        // Buscar membro
+        const { data: membro } = await supabase
+            .from('membros')
+            .select('id, nome')
+            .eq('discord_id', interaction.user.id)
+            .single();
+        
+        if (!membro) {
+            throw new Error('Membro não encontrado');
+        }
+        
+        // Inserir no banco
+        const { data: farmSalvo, error: insertError } = await supabase
+            .from('farm_semanal')
+            .insert([
+                {
+                    membro_id: membro.id,
+                    tipo_farm: farmTemp.tipo,
+                    quantidade: quantidade,
+                    semana_id: semanaNumero,
+                    ano: ano,
+                    data_farm: new Date().toISOString()
+                }
+            ])
+            .select()
+            .single();
+        
+        if (insertError) {
+            console.error('Erro ao inserir farm:', insertError);
+            throw insertError;
+        }
+        
+        // Limpar do armazenamento temporário
+        farmsEmProcesso.delete(tempId);
+        
+        return {
+            sucesso: true,
+            farmId: farmSalvo.id,
+            tipo: farmTemp.tipo,
+            quantidade: quantidade,
+            membroNome: membro.nome
+        };
+        
+    } catch (error) {
+        console.error('Erro ao salvar farm no banco:', error);
+        throw error;
+    }
+}
+
+// Função para obter número da semana
+function getWeekNumber(d) {
+    d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    return weekNo;
+}
+
+module.exports = {
+    processarFarm,
+    salvarFarmNoBanco,
+    farmsEmProcesso
+};
