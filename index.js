@@ -6,7 +6,7 @@ const path = require('path');
 // Importar Supabase
 const supabase = require('./src/database/supabase');
 
-// Adicionar Express para health check (opcional mas recomendado)
+// Adicionar Express para health check
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -47,7 +47,7 @@ async function testarSupabase() {
     console.log('🔗 Testando conexão com Supabase...');
     try {
         const { data, error } = await supabase
-            .from('membros') // Use uma tabela que existe
+            .from('membros')
             .select('count', { count: 'exact', head: true });
         
         if (error) {
@@ -61,7 +61,7 @@ async function testarSupabase() {
     }
 }
 
-// Carregar comandos (seu código atual)
+// Carregar comandos
 const commandsPath = path.join(__dirname, 'src/commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
@@ -83,7 +83,7 @@ for (const file of commandFiles) {
 
 console.log(`✅ ${comandosCarregados} comandos carregados\n`);
 
-// Carregar eventos (seu código atual)
+// Carregar eventos
 const eventsPath = path.join(__dirname, 'src/events');
 const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
 
@@ -125,8 +125,8 @@ client.login(process.env.DISCORD_TOKEN)
         process.exit(1);
     });
 
-// Seu código de eventos continua igual...
-client.on('ready', () => {
+// Evento ready
+client.once('ready', () => {
     console.log(`\n🤖 Bot pronto como: ${client.user.tag}`);
     console.log(`🆔 ID: ${client.user.id}`);
     console.log(`👥 Servidores: ${client.guilds.cache.size}`);
@@ -134,7 +134,7 @@ client.on('ready', () => {
     console.log('✨ Bot online no Railway!');
 });
 
-// Tratamentos de erro (mantenha seu código atual)
+// Tratamentos de erro
 process.on('unhandledRejection', error => {
     console.error('❌ Erro não tratado:', error);
 });

@@ -6,7 +6,8 @@ const {
     ModalBuilder, 
     TextInputBuilder, 
     TextInputStyle,
-    StringSelectMenuBuilder 
+    StringSelectMenuBuilder,
+    MessageFlags 
 } = require('discord.js');
 const supabase = require('../database/supabase');
 
@@ -34,53 +35,100 @@ async function enviarMenuEncomendas(canal) {
     await canal.send({ embeds: [embed], components: [botao] });
 }
 
-// Modal para iniciar encomenda
+// Modal para iniciar encomenda - CORREÇÃO FINAL
 async function iniciarEncomendaModal(interaction) {
-    const modal = new ModalBuilder()
-        .setCustomId('encomenda_modal')
-        .setTitle('Nova Encomenda');
-
-    const clienteInput = new TextInputBuilder()
-        .setCustomId('cliente_input')
-        .setLabel("Nome do Cliente")
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder("Ex: João Silva")
-        .setRequired(true)
-        .setMaxLength(100);
-
-    const observacoesInput = new TextInputBuilder()
-        .setCustomId('observacoes_input')
-        .setLabel("Observações (opcional)")
-        .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder("Detalhes adicionais sobre a encomenda...")
-        .setRequired(false)
-        .setMaxLength(500);
-
-    const primeiraLinha = new ActionRowBuilder().addComponents(clienteInput);
-    const segundaLinha = new ActionRowBuilder().addComponents(observacoesInput);
-
-    modal.addComponents(primeiraLinha, segundaLinha);
-    await interaction.showModal(modal);
-}
-
-// Processar modal e mostrar seleção de produtos
-async function processarModalEncomenda(interaction) {
+    console.log('🛒 Iniciando modal de encomenda...');
+    
     try {
-        await interaction.deferReply({ flags: 64 });
-        
-        const clienteNome = interaction.fields.getTextInputValue('cliente_input');
-        const observacoes = interaction.fields.getTextInputValue('observacoes_input') || '';
-        
-        // Verificar se é gerência
+        // Verificar novamente as permissões (redundante por segurança)
         const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
                            interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
         
         if (!isGerencia) {
-            return interaction.editReply({
-                content: '❌ Apenas gerência pode criar encomendas!',
-                flags: 64
-            });
+            // Se não for gerência, precisamos responder
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                    content: '❌ Apenas gerência pode criar encomendas!',
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            return;
         }
+        
+        // Criar o modal
+        const modal = new ModalBuilder()
+            .setCustomId('encomenda_modal')
+            .setTitle('Nova Encomenda');
+
+        const clienteInput = new TextInputBuilder()
+            .setCustomId('cliente_input')
+            .setLabel("Nome do Cliente")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Ex: João Silva")
+            .setRequired(true)
+            .setMaxLength(100);
+
+        const observacoesInput = new TextInputBuilder()
+            .setCustomId('observacoes_input')
+            .setLabel("Observações (opcional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Detalhes adicionais sobre a encomenda...")
+            .setRequired(false)
+            .setMaxLength(500);
+
+        const primeiraLinha = new ActionRowBuilder().addComponents(clienteInput);
+        const segundaLinha = new ActionRowBuilder().addComponents(observacoesInput);
+
+        modal.addComponents(primeiraLinha, segundaLinha);
+        
+        // Mostrar o modal - ESTA É A PARTE CRÍTICA
+        console.log('📤 Mostrando modal...');
+        await interaction.showModal(modal);
+        console.log('✅ Modal mostrado com sucesso!');
+        
+    } catch (error) {
+        console.error('❌ Erro crítico ao mostrar modal de encomenda:', error);
+        console.error('Código do erro:', error.code);
+        console.error('Mensagem:', error.message);
+        
+        // Tratamento específico para o erro 40060
+        if (error.code === 40060) {
+            console.log('⚠️ Interação já foi reconhecida (erro 40060).');
+            // Não fazer nada - a interação já foi processada
+            return;
+        }
+        
+        // Tentar enviar uma mensagem de erro apenas se não foi respondido
+        try {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                    content: '❌ Não foi possível iniciar a encomenda. Tente novamente.',
+                    flags: MessageFlags.Ephemeral
+                });
+            } else if (interaction.deferred) {
+                await interaction.editReply({
+                    content: '❌ Não foi possível iniciar a encomenda. Tente novamente.'
+                });
+            }
+        } catch (replyError) {
+            console.error('❌ Não foi possível enviar mensagem de erro:', replyError);
+        }
+    }
+}
+
+// Processar modal e mostrar seleção de produtos
+async function processarModalEncomenda(interaction) {
+    console.log('📦 Processando dados do modal...');
+    
+    try {
+        // Responder primeiro para evitar timeout
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        const clienteNome = interaction.fields.getTextInputValue('cliente_input');
+        const observacoes = interaction.fields.getTextInputValue('observacoes_input') || '';
+        
+        console.log(`👤 Cliente: ${clienteNome}`);
+        console.log(`📝 Observações: ${observacoes || 'Nenhuma'}`);
         
         // Buscar produtos disponíveis
         const { data: produtos, error } = await supabase
@@ -89,20 +137,26 @@ async function processarModalEncomenda(interaction) {
             .eq('ativo', true)
             .order('nome');
         
-        if (error) throw error;
+        if (error) {
+            console.error('❌ Erro ao buscar produtos:', error);
+            throw error;
+        }
         
         if (!produtos || produtos.length === 0) {
+            console.log('⚠️ Nenhum produto disponível');
             return interaction.editReply({
-                content: '❌ Nenhum produto disponível no momento!',
-                flags: 64
+                content: '❌ Nenhum produto disponível no momento!'
             });
         }
+        
+        console.log(`📦 ${produtos.length} produtos encontrados`);
         
         // Salvar dados temporários
         const dadosTemporarios = {
             clienteNome,
             observacoes,
             atendenteId: interaction.user.id,
+            atendenteNome: interaction.user.username,
             produtos: produtos.map(p => ({
                 id: p.id,
                 nome: p.nome,
@@ -116,18 +170,20 @@ async function processarModalEncomenda(interaction) {
         const tempId = Date.now().toString();
         global.encomendasTemporarias[tempId] = dadosTemporarios;
         
+        console.log(`🆔 Encomenda temporária criada: ${tempId}`);
+        
         // Criar menu de seleção de produtos
+        const selectOptions = produtos.map(produto => ({
+            label: produto.nome.length > 25 ? produto.nome.substring(0, 22) + '...' : produto.nome,
+            description: `$${produto.valor_unitario.toLocaleString('pt-BR')} cada`,
+            value: produto.id.toString(),
+            emoji: getProdutoEmoji(produto.nome)
+        }));
+        
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId(`selecionar_produto_${tempId}`)
             .setPlaceholder('Selecione um produto para adicionar')
-            .addOptions(
-                produtos.map(produto => ({
-                    label: produto.nome,
-                    description: `$${produto.valor_unitario.toLocaleString('pt-BR')} cada`,
-                    value: produto.id.toString(),
-                    emoji: getProdutoEmoji(produto.nome)
-                }))
-            );
+            .addOptions(selectOptions);
         
         const row = new ActionRowBuilder().addComponents(selectMenu);
         
@@ -162,81 +218,126 @@ async function processarModalEncomenda(interaction) {
             components: [row, botaoFinalizar]
         });
         
+        console.log('✅ Modal processado com sucesso!');
+        
     } catch (error) {
         console.error('❌ Erro ao processar modal de encomenda:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`,
-            flags: 64
-        });
+        
+        if (interaction.deferred) {
+            await interaction.editReply({
+                content: `❌ Erro: ${error.message}`
+            });
+        } else {
+            try {
+                await interaction.reply({
+                    content: `❌ Erro: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            } catch (replyError) {
+                console.error('❌ Não foi possível responder:', replyError);
+            }
+        }
     }
 }
 
 // Modal para quantidade do produto
 async function mostrarModalQuantidade(interaction, produtoId, tempId) {
-    if (!global.encomendasTemporarias || !global.encomendasTemporarias[tempId]) {
-        return interaction.reply({
-            content: '❌ Sessão expirada! Por favor, inicie novamente.',
-            flags: 64
-        });
+    console.log(`📊 Mostrando modal de quantidade para produto ${produtoId}, temp ${tempId}`);
+    
+    try {
+        if (!global.encomendasTemporarias || !global.encomendasTemporarias[tempId]) {
+            console.log('⚠️ Sessão expirada');
+            return interaction.reply({
+                content: '❌ Sessão expirada! Por favor, inicie novamente.',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+        
+        const dados = global.encomendasTemporarias[tempId];
+        const produto = dados.produtos.find(p => p.id == produtoId);
+        
+        if (!produto) {
+            console.log('⚠️ Produto não encontrado');
+            return interaction.reply({
+                content: '❌ Produto não encontrado!',
+                flags: MessageFlags.Ephemeral
+            });
+        }
+        
+        console.log(`📦 Produto: ${produto.nome}, Valor: $${produto.valor}`);
+        
+        const modal = new ModalBuilder()
+            .setCustomId(`quantidade_modal_${produtoId}_${tempId}`)
+            .setTitle(`Quantidade: ${produto.nome}`);
+        
+        const quantidadeInput = new TextInputBuilder()
+            .setCustomId('quantidade_input')
+            .setLabel(`Quantidade de ${produto.nome}`)
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder(`Digite a quantidade (Valor: $${produto.valor.toLocaleString('pt-BR')} cada)`)
+            .setRequired(true)
+            .setMaxLength(10);
+        
+        const linha = new ActionRowBuilder().addComponents(quantidadeInput);
+        modal.addComponents(linha);
+        
+        await interaction.showModal(modal);
+        console.log('✅ Modal de quantidade mostrado!');
+        
+    } catch (error) {
+        console.error('❌ Erro ao mostrar modal de quantidade:', error);
+        
+        if (error.code === 40060) {
+            console.log('⚠️ Interação já reconhecida');
+            return;
+        }
+        
+        try {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                    content: '❌ Erro ao abrir formulário de quantidade. Tente novamente.',
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+        } catch (replyError) {
+            console.error('❌ Não foi possível responder:', replyError);
+        }
     }
-    
-    const dados = global.encomendasTemporarias[tempId];
-    const produto = dados.produtos.find(p => p.id == produtoId);
-    
-    if (!produto) {
-        return interaction.reply({
-            content: '❌ Produto não encontrado!',
-            flags: 64
-        });
-    }
-    
-    const modal = new ModalBuilder()
-        .setCustomId(`quantidade_modal_${produtoId}_${tempId}`)
-        .setTitle(`Quantidade: ${produto.nome}`);
-    
-    const quantidadeInput = new TextInputBuilder()
-        .setCustomId('quantidade_input')
-        .setLabel(`Quantidade de ${produto.nome}`)
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder(`Digite a quantidade (Valor unitário: $${produto.valor.toLocaleString('pt-BR')})`)
-        .setRequired(true)
-        .setMaxLength(10);
-    
-    const linha = new ActionRowBuilder().addComponents(quantidadeInput);
-    modal.addComponents(linha);
-    
-    await interaction.showModal(modal);
 }
 
 // Processar quantidade e atualizar carrinho
 async function processarQuantidadeProduto(interaction) {
+    console.log('📊 Processando quantidade...');
+    
     try {
-        await interaction.deferReply({ flags: 64 });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         
         const customIdParts = interaction.customId.split('_');
         const produtoId = customIdParts[2];
         const tempId = customIdParts[3];
         const quantidade = interaction.fields.getTextInputValue('quantidade_input');
         
+        console.log(`🔢 Quantidade recebida: ${quantidade} para produto ${produtoId}, temp ${tempId}`);
+        
         if (!global.encomendasTemporarias || !global.encomendasTemporarias[tempId]) {
+            console.log('⚠️ Dados temporários não encontrados');
             return interaction.editReply({
-                content: '❌ Sessão expirada! Por favor, inicie novamente.',
-                flags: 64
+                content: '❌ Sessão expirada! Por favor, inicie novamente.'
             });
         }
         
         const quantidadeNum = parseInt(quantidade);
         if (isNaN(quantidadeNum) || quantidadeNum <= 0) {
+            console.log('⚠️ Quantidade inválida:', quantidade);
             return interaction.editReply({
-                content: '❌ Quantidade inválida! Digite um número maior que 0.',
-                flags: 64
+                content: '❌ Quantidade inválida! Digite um número maior que 0.'
             });
         }
         
         if (quantidadeNum > 1000) {
+            console.log('⚠️ Quantidade muito alta:', quantidadeNum);
             return interaction.editReply({
-                content: '❌ Quantidade muito alta! Máximo: 1000 unidades.',
-                flags: 64
+                content: '❌ Quantidade muito alta! Máximo: 1000 unidades.'
             });
         }
         
@@ -245,44 +346,48 @@ async function processarQuantidadeProduto(interaction) {
         const produtoIndex = dados.produtos.findIndex(p => p.id == produtoId);
         
         if (produtoIndex === -1) {
+            console.log('⚠️ Índice do produto não encontrado');
             return interaction.editReply({
-                content: '❌ Produto não encontrado!',
-                flags: 64
+                content: '❌ Produto não encontrado!'
             });
         }
         
         dados.produtos[produtoIndex].quantidade = quantidadeNum;
         global.encomendasTemporarias[tempId] = dados;
         
+        console.log(`✅ Produto atualizado: ${dados.produtos[produtoIndex].nome} x${quantidadeNum}`);
+        
         // Calcular total
         const total = dados.produtos.reduce((sum, p) => sum + (p.valor * p.quantidade), 0);
         
         const embed = criarEmbedCarrinho(dados, total);
         
-        // Atualizar mensagem
         await interaction.editReply({
             content: `✅ **${quantidadeNum} ${dados.produtos[produtoIndex].nome} adicionado(s)!**\n\nTotal atual: **$${total.toLocaleString('pt-BR')}**`,
             embeds: [embed]
         });
         
+        console.log('✅ Quantidade processada com sucesso!');
+        
     } catch (error) {
         console.error('❌ Erro ao processar quantidade:', error);
         await interaction.editReply({
-            content: `❌ Erro: ${error.message}`,
-            flags: 64
+            content: `❌ Erro: ${error.message}`
         });
     }
 }
 
 // Finalizar encomenda e enviar para canal de logs
 async function finalizarEncomenda(interaction, tempId) {
+    console.log(`✅ Finalizando encomenda temp: ${tempId}`);
+    
     try {
-        await interaction.deferReply({ flags: 64 });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         
         if (!global.encomendasTemporarias || !global.encomendasTemporarias[tempId]) {
+            console.log('⚠️ Encomenda temporária não encontrada');
             return interaction.editReply({
-                content: '❌ Sessão expirada! Por favor, inicie novamente.',
-                flags: 64
+                content: '❌ Sessão expirada! Por favor, inicie novamente.'
             });
         }
         
@@ -290,48 +395,58 @@ async function finalizarEncomenda(interaction, tempId) {
         const produtosSelecionados = dados.produtos.filter(p => p.quantidade > 0);
         
         if (produtosSelecionados.length === 0) {
+            console.log('⚠️ Nenhum produto selecionado');
             return interaction.editReply({
-                content: '❌ Nenhum produto selecionado!',
-                flags: 64
+                content: '❌ Nenhum produto selecionado!'
             });
         }
         
         const total = produtosSelecionados.reduce((sum, p) => sum + (p.valor * p.quantidade), 0);
         
+        console.log(`💾 Salvando encomenda no banco...`);
+        console.log(`👤 Cliente: ${dados.clienteNome}`);
+        console.log(`💰 Total: $${total}`);
+        console.log(`📦 Produtos: ${produtosSelecionados.length}`);
+        
         // Salvar encomenda no banco
         const { data: encomenda, error: errorEncomenda } = await supabase
             .from('encomendas')
-            .insert([
-                {
-                    cliente_nome: dados.clienteNome,
-                    cliente_discord_id: null,
-                    status: 'pendente',
-                    valor_total: total,
-                    atendente_id: dados.atendenteId,
-                    observacoes: dados.observacoes
-                }
-            ])
+            .insert([{
+                cliente_nome: dados.clienteNome,
+                status: 'pendente',
+                valor_total: total,
+                atendente_id: dados.atendenteId,
+                atendente_nome: dados.atendenteNome,
+                observacoes: dados.observacoes,
+                data_pedido: new Date().toISOString()
+            }])
             .select()
             .single();
         
-        if (errorEncomenda) throw errorEncomenda;
+        if (errorEncomenda) {
+            console.error('❌ Erro ao salvar encomenda:', errorEncomenda);
+            throw errorEncomenda;
+        }
+        
+        console.log(`✅ Encomenda salva com ID: ${encomenda.id}`);
         
         // Salvar itens da encomenda
         for (const produto of produtosSelecionados) {
             const { error: errorItem } = await supabase
                 .from('encomenda_itens')
-                .insert([
-                    {
-                        encomenda_id: encomenda.id,
-                        produto_id: produto.id,
-                        quantidade: produto.quantidade,
-                        valor_unitario: produto.valor,
-                        valor_total: produto.valor * produto.quantidade
-                    }
-                ]);
+                .insert([{
+                    encomenda_id: encomenda.id,
+                    produto_id: produto.id,
+                    produto_nome: produto.nome,
+                    quantidade: produto.quantidade,
+                    valor_unitario: produto.valor,
+                    valor_total: produto.valor * produto.quantidade
+                }]);
             
             if (errorItem) {
                 console.error('❌ Erro ao salvar item:', errorItem);
+            } else {
+                console.log(`✅ Item salvo: ${produto.nome} x${produto.quantidade}`);
             }
         }
         
@@ -339,98 +454,25 @@ async function finalizarEncomenda(interaction, tempId) {
         delete global.encomendasTemporarias[tempId];
         
         // Enviar log para canal de logs
-        await enviarLogEncomenda(interaction.client, encomenda, dados, produtosSelecionados, total, interaction.user);
-        
-        // Limpar o canal de encomendas (deletar todas as mensagens exceto a inicial)
-        await limparCanalEncomendas(interaction.channel);
+        await enviarLogEncomenda(interaction.client, encomenda, dados, produtosSelecionados, total);
         
         // Enviar confirmação
         await interaction.editReply({
             content: `✅ **ENCOMENDA #${encomenda.id} CRIADA COM SUCESSO!**\n\n📦 **ID:** #${encomenda.id}\n👤 **Cliente:** ${dados.clienteNome}\n💰 **Valor:** $${total.toLocaleString('pt-BR')}\n\nA encomenda foi registrada no sistema de logs.`
         });
         
-        // Após 5 segundos, deletar esta mensagem também
-        setTimeout(async () => {
-            try {
-                await interaction.deleteReply();
-            } catch (error) {
-                console.log('⚠️  Não foi possível deletar mensagem de confirmação:', error.message);
-            }
-        }, 5000);
+        console.log('✅ Encomenda finalizada com sucesso!');
         
     } catch (error) {
         console.error('❌ Erro ao finalizar encomenda:', error);
         await interaction.editReply({
-            content: `❌ Erro ao criar encomenda: ${error.message}`,
-            flags: 64
+            content: `❌ Erro ao criar encomenda: ${error.message}`
         });
     }
 }
 
-// Função para limpar canal de encomendas
-async function limparCanalEncomendas(canal) {
-    try {
-        // Buscar mensagens (exceto a primeira que tem o menu)
-        const messages = await canal.messages.fetch({ limit: 100 });
-        
-        // Encontrar a mensagem do menu (tem embed com título "SISTEMA DE ENCOMENDAS")
-        let menuMessage = null;
-        for (const [id, message] of messages) {
-            if (message.embeds.length > 0 && 
-                message.embeds[0].title && 
-                message.embeds[0].title.includes('SISTEMA DE ENCOMENDAS')) {
-                menuMessage = message;
-                break;
-            }
-        }
-        
-        // Deletar todas as mensagens exceto o menu
-        const messagesToDelete = messages.filter(msg => 
-            msg.id !== menuMessage?.id && 
-            !msg.pinned
-        );
-        
-        if (messagesToDelete.size > 0) {
-            console.log(`🗑️  Limpando ${messagesToDelete.size} mensagens do canal de encomendas`);
-            
-            // Deletar em lotes de 100 (limite do Discord)
-            const batches = [];
-            let currentBatch = [];
-            let count = 0;
-            
-            messagesToDelete.forEach(msg => {
-                currentBatch.push(msg);
-                count++;
-                
-                if (count === 100) {
-                    batches.push([...currentBatch]);
-                    currentBatch = [];
-                    count = 0;
-                }
-            });
-            
-            if (currentBatch.length > 0) {
-                batches.push(currentBatch);
-            }
-            
-            // Deletar cada lote
-            for (const batch of batches) {
-                try {
-                    await canal.bulkDelete(batch);
-                    await new Promise(resolve => setTimeout(resolve, 1000)); // Aguardar 1s entre lotes
-                } catch (error) {
-                    console.log('⚠️  Erro ao deletar lote:', error.message);
-                }
-            }
-        }
-        
-    } catch (error) {
-        console.error('❌ Erro ao limpar canal de encomendas:', error);
-    }
-}
-
 // Enviar log para canal de logs
-async function enviarLogEncomenda(client, encomenda, dados, produtos, total, atendente) {
+async function enviarLogEncomenda(client, encomenda, dados, produtos, total) {
     try {
         const canalLogId = process.env.CANAL_LOG_ENCOMENDAS_ID;
         if (!canalLogId) {
@@ -452,9 +494,11 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total, ate
                 { name: '👤 Cliente', value: dados.clienteNome, inline: true },
                 { name: '💰 Valor Total', value: `$${total.toLocaleString('pt-BR')}`, inline: true },
                 { name: '📊 Status', value: '⏳ Pendente', inline: true },
-                { name: '🛠️ Atendente', value: atendente.username, inline: true },
+                { name: '🛠️ Atendente', value: dados.atendenteNome, inline: true },
                 { name: '📅 Data', value: new Date().toLocaleString('pt-BR'), inline: true }
-            );
+            )
+            .setFooter({ text: `ID da Encomenda: ${encomenda.id}` })
+            .setTimestamp();
         
         if (dados.observacoes) {
             embedLog.addFields({
@@ -466,15 +510,16 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total, ate
         
         // Adicionar detalhes dos produtos
         let produtosText = '';
-        produtos.forEach((produto, index) => {
+        produtos.forEach((produto) => {
+            const subtotal = produto.valor * produto.quantidade;
             produtosText += `**${produto.nome}**\n`;
-            produtosText += `Quantidade: ${produto.quantidade} × $${produto.valor.toLocaleString('pt-BR')}\n`;
-            produtosText += `Subtotal: $${(produto.valor * produto.quantidade).toLocaleString('pt-BR')}\n\n`;
+            produtosText += `• Quantidade: ${produto.quantidade} × $${produto.valor.toLocaleString('pt-BR')}\n`;
+            produtosText += `• Subtotal: $${subtotal.toLocaleString('pt-BR')}\n\n`;
         });
         
         embedLog.addFields({
             name: '📋 Produtos Encomendados',
-            value: produtosText,
+            value: produtosText || 'Nenhum produto selecionado',
             inline: false
         });
         
@@ -503,7 +548,7 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total, ate
         await supabase
             .from('encomendas')
             .update({
-                mensagem_id: mensagemLog.id
+                mensagem_log_id: mensagemLog.id
             })
             .eq('id', encomenda.id);
         
@@ -525,13 +570,16 @@ function criarEmbedCarrinho(dados, total) {
             { name: '👤 Cliente', value: dados.clienteNome, inline: true },
             { name: '💰 Total Parcial', value: `$${total.toLocaleString('pt-BR')}`, inline: true },
             { name: '📋 Itens', value: produtosSelecionados.length.toString(), inline: true }
-        );
+        )
+        .setFooter({ text: 'Selecione mais produtos ou finalize a encomenda' });
     
     if (produtosSelecionados.length > 0) {
         let itensText = '';
-        produtosSelecionados.forEach((produto, index) => {
+        produtosSelecionados.forEach((produto) => {
+            const subtotal = produto.valor * produto.quantidade;
             itensText += `**${produto.nome}**\n`;
-            itensText += `Quantidade: ${produto.quantidade} × $${produto.valor.toLocaleString('pt-BR')} = $${(produto.valor * produto.quantidade).toLocaleString('pt-BR')}\n\n`;
+            itensText += `• Quantidade: ${produto.quantidade} × $${produto.valor.toLocaleString('pt-BR')}\n`;
+            itensText += `• Subtotal: $${subtotal.toLocaleString('pt-BR')}\n\n`;
         });
         
         embed.addFields({ name: '📦 Produtos Selecionados', value: itensText, inline: false });
@@ -544,13 +592,22 @@ function criarEmbedCarrinho(dados, total) {
 
 function getProdutoEmoji(nome) {
     const emojis = {
-        'Chip': '📱',
-        'Hacking': '💻',
-        'Pendrive de invasão': '💾',
-        'Jammer': '📡',
-        'Cartão Criptografado': '💳'
+        'chip': '📱',
+        'hacking': '💻',
+        'pendrive': '💾',
+        'jammer': '📡',
+        'cartão': '💳',
+        'cartao': '💳'
     };
-    return emojis[nome] || '📦';
+    
+    const nomeLower = nome.toLowerCase();
+    for (const [key, emoji] of Object.entries(emojis)) {
+        if (nomeLower.includes(key)) {
+            return emoji;
+        }
+    }
+    
+    return '📦';
 }
 
 module.exports = {
