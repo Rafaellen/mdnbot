@@ -151,10 +151,8 @@ async function mostrarDropdownFarm(message, isGerencia) {
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
 
-        const reply = await message.reply({
-            content: isGerencia 
-                ? '📸 **IMAGEM DETECTADA!**\nSelecione abaixo:\n• **Farm** - Para registrar farm normal\n• **Comprovante** - Para registrar pagamento (apenas gerência)'
-                : '📸 **IMAGEM DETECTADA!**\nSelecione o tipo de farm abaixo:',
+        await message.reply({
+            content: '📸 **IMAGEM DETECTADA!**\nSelecione o tipo de farm abaixo:',
             components: [row]
         });
         
