@@ -11,6 +11,11 @@ const {
 } = require('discord.js');
 const supabase = require('../database/supabase');
 
+// Inicializar global se não existir
+if (!global.encomendasTemporarias) {
+    global.encomendasTemporarias = {};
+}
+
 // Enviar menu de encomendas no canal
 async function enviarMenuEncomendas(canal) {
     const embed = new EmbedBuilder()
@@ -35,100 +40,27 @@ async function enviarMenuEncomendas(canal) {
     await canal.send({ embeds: [embed], components: [botao] });
 }
 
-// Modal para iniciar encomenda - CORREÇÃO FINAL
-async function iniciarEncomendaModal(interaction) {
-    console.log('🛒 Iniciando modal de encomenda...');
-    
-    try {
-        // Verificar novamente as permissões (redundante por segurança)
-        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
-                           interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
-        
-        if (!isGerencia) {
-            // Se não for gerência, precisamos responder
-            if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                    content: '❌ Apenas gerência pode criar encomendas!',
-                    flags: MessageFlags.Ephemeral
-                });
-            }
-            return;
-        }
-        
-        // Criar o modal
-        const modal = new ModalBuilder()
-            .setCustomId('encomenda_modal')
-            .setTitle('Nova Encomenda');
-
-        const clienteInput = new TextInputBuilder()
-            .setCustomId('cliente_input')
-            .setLabel("Nome do Cliente")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Ex: João Silva")
-            .setRequired(true)
-            .setMaxLength(100);
-
-        const observacoesInput = new TextInputBuilder()
-            .setCustomId('observacoes_input')
-            .setLabel("Observações (opcional)")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Detalhes adicionais sobre a encomenda...")
-            .setRequired(false)
-            .setMaxLength(500);
-
-        const primeiraLinha = new ActionRowBuilder().addComponents(clienteInput);
-        const segundaLinha = new ActionRowBuilder().addComponents(observacoesInput);
-
-        modal.addComponents(primeiraLinha, segundaLinha);
-        
-        // Mostrar o modal - ESTA É A PARTE CRÍTICA
-        console.log('📤 Mostrando modal...');
-        await interaction.showModal(modal);
-        console.log('✅ Modal mostrado com sucesso!');
-        
-    } catch (error) {
-        console.error('❌ Erro crítico ao mostrar modal de encomenda:', error);
-        console.error('Código do erro:', error.code);
-        console.error('Mensagem:', error.message);
-        
-        // Tratamento específico para o erro 40060
-        if (error.code === 40060) {
-            console.log('⚠️ Interação já foi reconhecida (erro 40060).');
-            // Não fazer nada - a interação já foi processada
-            return;
-        }
-        
-        // Tentar enviar uma mensagem de erro apenas se não foi respondido
-        try {
-            if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                    content: '❌ Não foi possível iniciar a encomenda. Tente novamente.',
-                    flags: MessageFlags.Ephemeral
-                });
-            } else if (interaction.deferred) {
-                await interaction.editReply({
-                    content: '❌ Não foi possível iniciar a encomenda. Tente novamente.'
-                });
-            }
-        } catch (replyError) {
-            console.error('❌ Não foi possível enviar mensagem de erro:', replyError);
-        }
-    }
-}
-
 // Processar modal e mostrar seleção de produtos
 async function processarModalEncomenda(interaction) {
     console.log('📦 Processando dados do modal...');
     
     try {
-        // Responder primeiro para evitar timeout
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        
         const clienteNome = interaction.fields.getTextInputValue('cliente_input');
         const observacoes = interaction.fields.getTextInputValue('observacoes_input') || '';
         
         console.log(`👤 Cliente: ${clienteNome}`);
         console.log(`📝 Observações: ${observacoes || 'Nenhuma'}`);
+        
+        // Verificar se é gerência (verificação adicional por segurança)
+        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
+                           interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
+        
+        if (!isGerencia) {
+            console.log('❌ Usuário não é gerência (verificação no modal)');
+            return interaction.editReply({
+                content: '❌ Apenas gerência pode criar encomendas!'
+            });
+        }
         
         // Buscar produtos disponíveis
         const { data: produtos, error } = await supabase
@@ -139,7 +71,7 @@ async function processarModalEncomenda(interaction) {
         
         if (error) {
             console.error('❌ Erro ao buscar produtos:', error);
-            throw error;
+            throw new Error('Erro ao buscar produtos disponíveis');
         }
         
         if (!produtos || produtos.length === 0) {
@@ -157,6 +89,7 @@ async function processarModalEncomenda(interaction) {
             observacoes,
             atendenteId: interaction.user.id,
             atendenteNome: interaction.user.username,
+            dataCriacao: Date.now(),
             produtos: produtos.map(p => ({
                 id: p.id,
                 nome: p.nome,
@@ -165,8 +98,9 @@ async function processarModalEncomenda(interaction) {
             }))
         };
         
-        // Armazenar temporariamente
-        global.encomendasTemporarias = global.encomendasTemporarias || {};
+        // Armazenar temporariamente com limpeza automática de antigos
+        limparEncomendasAntigas();
+        
         const tempId = Date.now().toString();
         global.encomendasTemporarias[tempId] = dadosTemporarios;
         
@@ -193,9 +127,11 @@ async function processarModalEncomenda(interaction) {
             .addFields(
                 { name: '👤 Cliente', value: clienteNome, inline: true },
                 { name: '🛠️ Atendente', value: interaction.user.username, inline: true },
-                { name: '📝 Observações', value: observacoes || 'Nenhuma', inline: false }
+                { name: '📝 Observações', value: observacoes || 'Nenhuma', inline: false },
+                { name: '⏰ Tempo limite', value: 'Esta sessão expira em 15 minutos', inline: true }
             )
-            .setDescription('Selecione os produtos abaixo:');
+            .setDescription('Selecione os produtos abaixo:')
+            .setFooter({ text: `ID da sessão: ${tempId}` });
         
         // Botão para finalizar seleção
         const botaoFinalizar = new ActionRowBuilder()
@@ -223,19 +159,19 @@ async function processarModalEncomenda(interaction) {
     } catch (error) {
         console.error('❌ Erro ao processar modal de encomenda:', error);
         
-        if (interaction.deferred) {
-            await interaction.editReply({
-                content: `❌ Erro: ${error.message}`
-            });
-        } else {
-            try {
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({
+                    content: `❌ Erro: ${error.message || 'Erro desconhecido'}`
+                });
+            } else {
                 await interaction.reply({
-                    content: `❌ Erro: ${error.message}`,
+                    content: `❌ Erro: ${error.message || 'Erro desconhecido'}`,
                     flags: MessageFlags.Ephemeral
                 });
-            } catch (replyError) {
-                console.error('❌ Não foi possível responder:', replyError);
             }
+        } catch (replyError) {
+            console.error('❌ Não foi possível responder:', replyError);
         }
     }
 }
@@ -247,6 +183,15 @@ async function mostrarModalQuantidade(interaction, produtoId, tempId) {
     try {
         if (!global.encomendasTemporarias || !global.encomendasTemporarias[tempId]) {
             console.log('⚠️ Sessão expirada');
+            
+            // Verificar se é uma sessão muito antiga
+            if (global.encomendasTemporarias[tempId]) {
+                const idade = Date.now() - global.encomendasTemporarias[tempId].dataCriacao;
+                if (idade > 15 * 60 * 1000) { // 15 minutos
+                    delete global.encomendasTemporarias[tempId];
+                }
+            }
+            
             return interaction.reply({
                 content: '❌ Sessão expirada! Por favor, inicie novamente.',
                 flags: MessageFlags.Ephemeral
@@ -371,9 +316,16 @@ async function processarQuantidadeProduto(interaction) {
         
     } catch (error) {
         console.error('❌ Erro ao processar quantidade:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
+        
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({
+                    content: `❌ Erro: ${error.message || 'Erro ao processar quantidade'}`
+                });
+            }
+        } catch (editError) {
+            console.error('❌ Não foi possível editar resposta:', editError);
+        }
     }
 }
 
@@ -425,7 +377,7 @@ async function finalizarEncomenda(interaction, tempId) {
         
         if (errorEncomenda) {
             console.error('❌ Erro ao salvar encomenda:', errorEncomenda);
-            throw errorEncomenda;
+            throw new Error(`Erro ao salvar encomenda: ${errorEncomenda.message}`);
         }
         
         console.log(`✅ Encomenda salva com ID: ${encomenda.id}`);
@@ -465,9 +417,16 @@ async function finalizarEncomenda(interaction, tempId) {
         
     } catch (error) {
         console.error('❌ Erro ao finalizar encomenda:', error);
-        await interaction.editReply({
-            content: `❌ Erro ao criar encomenda: ${error.message}`
-        });
+        
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({
+                    content: `❌ Erro ao criar encomenda: ${error.message || 'Erro desconhecido'}`
+                });
+            }
+        } catch (editError) {
+            console.error('❌ Não foi possível editar resposta:', editError);
+        }
     }
 }
 
@@ -476,13 +435,13 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total) {
     try {
         const canalLogId = process.env.CANAL_LOG_ENCOMENDAS_ID;
         if (!canalLogId) {
-            console.log('⚠️  Canal de log de encomendas não configurado.');
+            console.log('⚠️ Canal de log de encomendas não configurado.');
             return;
         }
         
         const canalLog = await client.channels.fetch(canalLogId);
         if (!canalLog) {
-            console.log('⚠️  Canal de log não encontrado.');
+            console.log('⚠️ Canal de log não encontrado.');
             return;
         }
         
@@ -495,7 +454,7 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total) {
                 { name: '💰 Valor Total', value: `$${total.toLocaleString('pt-BR')}`, inline: true },
                 { name: '📊 Status', value: '⏳ Pendente', inline: true },
                 { name: '🛠️ Atendente', value: dados.atendenteNome, inline: true },
-                { name: '📅 Data', value: new Date().toLocaleString('pt-BR'), inline: true }
+                { name: '📅 Data', value: new Date(encomenda.data_pedido).toLocaleString('pt-BR'), inline: true }
             )
             .setFooter({ text: `ID da Encomenda: ${encomenda.id}` })
             .setTimestamp();
@@ -548,7 +507,8 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total) {
         await supabase
             .from('encomendas')
             .update({
-                mensagem_log_id: mensagemLog.id
+                mensagem_log_id: mensagemLog.id,
+                canal_log_id: canalLogId
             })
             .eq('id', encomenda.id);
         
@@ -556,6 +516,21 @@ async function enviarLogEncomenda(client, encomenda, dados, produtos, total) {
         
     } catch (error) {
         console.error('❌ Erro ao enviar log:', error);
+    }
+}
+
+// Função para limpar encomendas antigas
+function limparEncomendasAntigas() {
+    if (!global.encomendasTemporarias) return;
+    
+    const agora = Date.now();
+    const limite = 15 * 60 * 1000; // 15 minutos
+    
+    for (const [tempId, dados] of Object.entries(global.encomendasTemporarias)) {
+        if (agora - dados.dataCriacao > limite) {
+            delete global.encomendasTemporarias[tempId];
+            console.log(`🧹 Encomenda temporária ${tempId} limpa (expirada)`);
+        }
     }
 }
 
@@ -569,9 +544,11 @@ function criarEmbedCarrinho(dados, total) {
         .addFields(
             { name: '👤 Cliente', value: dados.clienteNome, inline: true },
             { name: '💰 Total Parcial', value: `$${total.toLocaleString('pt-BR')}`, inline: true },
-            { name: '📋 Itens', value: produtosSelecionados.length.toString(), inline: true }
+            { name: '📋 Itens', value: produtosSelecionados.length.toString(), inline: true },
+            { name: '🛠️ Atendente', value: dados.atendenteNome, inline: true }
         )
-        .setFooter({ text: 'Selecione mais produtos ou finalize a encomenda' });
+        .setFooter({ text: 'Selecione mais produtos ou finalize a encomenda' })
+        .setTimestamp();
     
     if (produtosSelecionados.length > 0) {
         let itensText = '';
@@ -595,9 +572,12 @@ function getProdutoEmoji(nome) {
         'chip': '📱',
         'hacking': '💻',
         'pendrive': '💾',
+        'usb': '💾',
         'jammer': '📡',
         'cartão': '💳',
-        'cartao': '💳'
+        'cartao': '💳',
+        'card': '💳',
+        'criptografado': '💳'
     };
     
     const nomeLower = nome.toLowerCase();
@@ -612,7 +592,6 @@ function getProdutoEmoji(nome) {
 
 module.exports = {
     enviarMenuEncomendas,
-    iniciarEncomendaModal,
     processarModalEncomenda,
     mostrarModalQuantidade,
     processarQuantidadeProduto,
