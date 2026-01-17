@@ -1182,19 +1182,11 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         
         console.log(`✅ Farm fechado com sucesso para ${pasta.membros?.nome}`);
         
-    } catch (error) {
-        console.error('❌ Erro ao fechar farm:', error);
-        
-        try {
-            await interaction.channel.send({
-                content: `❌ **Erro ao fechar farm!**\n\n${error.message || 'Erro desconhecido'}\n\nPor favor, contate a administração.`,
-                flags: 64
-            });
-        } catch (channelError) {
+    }  catch (channelError) {
             console.error('❌ Não foi possível enviar mensagem de erro:', channelError.message);
         }
     }
-}
+
 
 function canProcessButton(interactionId) {
     if (processedButtons.has(interactionId)) {
