@@ -10,7 +10,7 @@ const {
 const supabase = require('../database/supabase');
 
 /**
- * Mostrar modal para registrar comprovante de pagamento (via dropdown)
+ * Mostrar modal para registrar comprovante de pagamento
  */
 async function mostrarModalComprovanteDropdown(interaction) {
     try {
@@ -393,75 +393,6 @@ async function verComprovantesMembro(interaction, membroId) {
     }
 }
 
-/**
- * Listar comprovantes por semana (função de compatibilidade)
- */
-async function listarComprovantes(interaction, semanaNumero, ano) {
-    try {
-        await interaction.deferReply({ flags: 64 });
-        
-        const { data: comprovantes, error } = await supabase
-            .from('comprovantes_pagamento')
-            .select('*')
-            .eq('semana_numero', semanaNumero)
-            .eq('ano', ano)
-            .order('data_envio', { ascending: false });
-        
-        if (error) {
-            throw error;
-        }
-        
-        if (!comprovantes || comprovantes.length === 0) {
-            return interaction.editReply({
-                content: `📭 Nenhum comprovante encontrado para a semana ${semanaNumero} de ${ano}.`
-            });
-        }
-        
-        const totalPago = comprovantes.reduce((sum, c) => sum + (c.valor_pago || 0), 0);
-        const membrosUnicos = [...new Set(comprovantes.map(c => c.membro_nome))];
-        
-        const embed = new EmbedBuilder()
-            .setTitle(`📋 COMPROVANTES - Semana ${semanaNumero}/${ano}`)
-            .setColor(0x9B59B6)
-            .setDescription(`**Total de comprovantes:** ${comprovantes.length}\n**Membros pagos:** ${membrosUnicos.length}\n**Total pago:** $${totalPago.toLocaleString('pt-BR')}`)
-            .setFooter({ text: 'Todos os comprovantes da semana' })
-            .setTimestamp();
-        
-        comprovantes.forEach((comp, index) => {
-            if (index < 25) { // Limite do Discord
-                embed.addFields({
-                    name: `💰 ${comp.membro_nome}`,
-                    value: `**Valor:** $${comp.valor_pago?.toLocaleString('pt-BR') || '0'}\n**Por:** ${comp.enviado_por_nome}\n**Data:** ${new Date(comp.data_envio).toLocaleDateString('pt-BR')}\n${comp.observacao ? `**Obs:** ${comp.observacao.substring(0, 100)}...` : ''}`,
-                    inline: true
-                });
-            }
-        });
-        
-        await interaction.editReply({
-            embeds: [embed]
-        });
-        
-    } catch (error) {
-        console.error('❌ Erro ao listar comprovantes:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
-    }
-}
-
-/**
- * Função antiga para manter compatibilidade
- */
-async function mostrarModalComprovante(interaction) {
-    console.log('⚠️ Usando função de comprovante antiga (manter compatibilidade)');
-    return mostrarModalComprovanteDropdown(interaction);
-}
-
-async function processarModalComprovante(interaction) {
-    console.log('⚠️ Processando modal de comprovante antigo (manter compatibilidade)');
-    return processarModalComprovanteDropdown(interaction);
-}
-
 // Função auxiliar para obter número da semana
 function getWeekNumber(d) {
     d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -474,9 +405,6 @@ function getWeekNumber(d) {
 module.exports = {
     mostrarModalComprovanteDropdown,
     processarModalComprovanteDropdown,
-    mostrarModalComprovante, // Compatibilidade
-    processarModalComprovante, // Compatibilidade
     fecharFarm,
-    verComprovantesMembro,
-    listarComprovantes
+    verComprovantesMembro
 };

@@ -3,7 +3,7 @@ const supabase = require('../database/supabase');
 const { finalizarEncomendaHandler, cancelarEncomendaHandler, cancelarEncomendaLogHandler } = require('../utils/encomendaHandlers');
 const { iniciarFarmSimples, processarModalFarmSimples } = require('../components/farmSimples');
 const { registrarMembroModal, editarFarmModal, criarPastaFarm } = require('../components/registro');
-const comprovanteHandler = require('../components/comprovante');
+const comprovanteHandler = require('../components/comprovanteDropdown');
 const encomendaComponents = require('../components/encomendas');
 
 // Sistema de lock para evitar duplicação
@@ -63,11 +63,19 @@ module.exports = {
                     await command.execute(interaction);
                 } catch (error) {
                     console.error('Erro no comando:', error);
+                    
+                    // CORREÇÃO: Verificar se já foi respondido
                     if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({
-                            content: '❌ Erro ao executar comando!',
-                            ephemeral: true
-                        });
+                        try {
+                            await interaction.reply({
+                                content: '❌ Erro ao executar comando!',
+                                flags: 64
+                            });
+                        } catch (replyError) {
+                            console.error('Não foi possível responder:', replyError.message);
+                        }
+                    } else {
+                        console.log('⚠️ Interação já foi respondida, não é possível enviar nova resposta');
                     }
                 }
                 return;
@@ -194,13 +202,42 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 8. BOTÃO DE COMPROVANTE (NOVO) - Modal para enviar comprovante
+    // 8. BOTÃO DE COMPROVANTE (ANTIGO - Manter compatibilidade)
     if (interaction.customId.startsWith('upload_comprovante_')) {
-        await comprovanteHandler.mostrarModalComprovante(interaction);
+        // Verificar se é gerência
+        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
+                          interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
+        
+        if (!isGerencia) {
+            return interaction.reply({
+                content: '❌ Apenas gerência pode enviar comprovantes!',
+                flags: 64
+            });
+        }
+        
+        await comprovanteHandler.mostrarModalComprovanteDropdown(interaction);
         return;
     }
     
-    // 9. BOTÃO ENVIAR COMPROVANTE (GERAL) - No resumo do /fecharpastas
+    // 9. BOTÃO FECHAR FARM (NOVO)
+    if (interaction.customId.startsWith('fechar_farm_')) {
+        const customIdParts = interaction.customId.split('_');
+        const semana = customIdParts[2];
+        const ano = customIdParts[3];
+        const canalId = customIdParts[4];
+        
+        await comprovanteHandler.fecharFarm(interaction, semana, ano, canalId);
+        return;
+    }
+    
+    // 10. BOTÃO VER COMPROVANTES
+    if (interaction.customId.startsWith('ver_comprovantes_')) {
+        const membroId = interaction.customId.split('_')[2];
+        await comprovanteHandler.verComprovantesMembro(interaction, membroId);
+        return;
+    }
+    
+    // 11. BOTÃO ENVIAR COMPROVANTE (GERAL) - No resumo do /fecharpastas
     if (interaction.customId.startsWith('enviar_comprovante_')) {
         const customIdParts = interaction.customId.split('_');
         const semana = customIdParts[2];
@@ -213,7 +250,7 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 10. BOTÃO VER DETALHES
+    // 12. BOTÃO VER DETALHES
     if (interaction.customId.startsWith('ver_detalhes_')) {
         const customIdParts = interaction.customId.split('_');
         const semana = customIdParts[2];
@@ -222,7 +259,7 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 11. BOTÃO GERAR PAGAMENTOS
+    // 13. BOTÃO GERAR PAGAMENTOS
     if (interaction.customId.startsWith('gerar_pagamentos_')) {
         await interaction.reply({
             content: '💰 **Os pagamentos já foram calculados no resumo!**\n\nConfira o arquivo anexado no comando `/fecharpastas` para ver os valores detalhados de cada membro.',
@@ -231,7 +268,7 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 12. BOTÃO FARM PAGO
+    // 14. BOTÕES ANTIGOS (Manter compatibilidade)
     if (interaction.customId.startsWith('farm_pago_')) {
         const customIdParts = interaction.customId.split('_');
         const semana = customIdParts[2];
@@ -244,7 +281,6 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 13. BOTÃO CONFIRMAR PAGAMENTO
     if (interaction.customId.startsWith('confirmar_pagamento_')) {
         const customIdParts = interaction.customId.split('_');
         const semana = customIdParts[2];
@@ -264,7 +300,6 @@ async function handleButton(interaction, client) {
         return;
     }
     
-    // 14. BOTÃO CANCELAR PAGAMENTO
     if (interaction.customId.startsWith('cancelar_pagamento_')) {
         await interaction.update({
             content: '❌ **Pagamento cancelado pela gerência.**',
@@ -432,9 +467,21 @@ async function handleModal(interaction, client) {
         return;
     }
     
-    // 6. MODAL DE COMPROVANTE (NOVO)
+    // 6. MODAL DE COMPROVANTE VIA DROPDOWN (NOVO)
+    if (interaction.customId === 'modal_comprovante_dropdown') {
+        await comprovanteHandler.processarModalComprovanteDropdown(interaction);
+        return;
+    }
+    
+    // 7. MODAL DE COMPROVANTE ANTIGO (Manter compatibilidade)
     if (interaction.customId.startsWith('modal_comprovante_')) {
         await comprovanteHandler.processarModalComprovante(interaction);
+        return;
+    }
+    
+    // 8. MODAL DE PROMOÇÃO
+    if (interaction.customId.startsWith('promover_modal_')) {
+        await processarPromocaoMembro(interaction);
         return;
     }
     
@@ -511,9 +558,28 @@ async function handleSelectMenu(interaction, client) {
         return;
     }
     
-    // 2. MENU DE SELEÇÃO DE TIPO DE FARM
+    // 2. MENU DE SELEÇÃO DE TIPO DE FARM COM OPÇÃO COMPROVANTE (NOVO)
     if (interaction.customId === 'selecionar_tipo_farm') {
-        await iniciarFarmSimples(interaction);
+        const selectedValue = interaction.values[0];
+        
+        console.log(`🔘 Opção selecionada: ${selectedValue}`);
+        
+        if (selectedValue === 'comprovante_pagamento') {
+            // Verificar se é gerência
+            const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
+                              interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
+            
+            if (!isGerencia) {
+                return interaction.reply({
+                    content: '❌ **Apenas gerência pode registrar comprovantes!**',
+                    flags: 64
+                });
+            }
+            
+            await comprovanteHandler.mostrarModalComprovanteDropdown(interaction);
+        } else {
+            await iniciarFarmSimples(interaction);
+        }
         return;
     }
     
@@ -844,17 +910,6 @@ async function promoverMembro(interaction, discordId) {
             content: `❌ Erro: ${error.message}`
         });
     }
-}
-
-// Funções para processar modal de promoção (adicionar ao handler de modais)
-if (module.exports.name === Events.InteractionCreate) {
-    // Esta função precisa ser adicionada no handler de modais
-    // Adicione este caso após os outros casos no handler handleModal:
-    
-    // if (interaction.customId.startsWith('promover_modal_')) {
-    //     await processarPromocaoMembro(interaction);
-    //     return;
-    // }
 }
 
 async function processarPromocaoMembro(interaction) {

@@ -1,18 +1,4 @@
 const { Events, ActionRowBuilder, StringSelectMenuBuilder, PermissionFlagsBits } = require('discord.js');
-const comprovanteHandler = require('../components/comprovante');
-
-// Cache para verificar se uma mensagem recente foi sobre comprovante
-const comprovanteCache = new Map();
-
-// Limpar cache antigo periodicamente
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, timestamp] of comprovanteCache.entries()) {
-        if (now - timestamp > 5 * 60 * 1000) { // 5 minutos
-            comprovanteCache.delete(key);
-        }
-    }
-}, 60 * 1000); // A cada 1 minuto
 
 module.exports = {
     name: Events.MessageCreate,
@@ -23,36 +9,7 @@ module.exports = {
         console.log(`📨 Nova mensagem em #${message.channel.name} de ${message.author.tag}`);
 
         try {
-            // 1. VERIFICAR SE É UM COMPROVANTE
-            // Primeiro, verificar se há contexto de comprovante para este canal/autor
-            const cacheKey = `${message.channel.id}_${message.author.id}`;
-            const hasComprovanteContext = comprovanteCache.has(cacheKey);
-            
-            // Se há contexto de comprovante E a mensagem tem imagem
-            if (hasComprovanteContext && message.attachments.size > 0 && 
-                message.attachments.first().contentType?.startsWith('image/')) {
-                
-                console.log(`📎 Contexto de comprovante detectado para ${message.author.tag} em ${message.channel.name}`);
-                
-                // Verificar se o autor é gerência
-                const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-                if (!member) return;
-                
-                const isGerencia = member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
-                                  member.roles.cache.has(process.env.CARGO_LIDER_ID);
-                
-                if (!isGerencia) {
-                    console.log(`❌ ${message.author.tag} não é gerência, ignorando contexto de comprovante`);
-                    comprovanteCache.delete(cacheKey);
-                    return;
-                }
-                
-                // Processar como comprovante
-                await processarComoComprovante(message, cacheKey);
-                return;
-            }
-            
-            // 2. VERIFICAR SE É UMA IMAGEM EM CANAL DE PASTA FARM
+            // VERIFICAR SE É UMA IMAGEM EM CANAL DE PASTA FARM
             if (message.attachments.size > 0 && message.attachments.first().contentType?.startsWith('image/')) {
                 console.log(`🖼️ Imagem detectada de ${message.author.tag} em ${message.channel.name}`);
                 
@@ -68,21 +25,13 @@ module.exports = {
                     if (canRegisterFarm) {
                         console.log(`✅ ${message.author.tag} tem permissão para registrar farm`);
                         
-                        // Verificar se há contexto de comprovante ativo
-                        const lastBotMessage = await buscarUltimaMensagemBot(message.channel);
-                        const isComprovanteFlow = lastBotMessage && 
-                                                 (lastBotMessage.content.includes('COMPROVANTE') || 
-                                                  lastBotMessage.content.includes('comprovante'));
+                        // Verificar se é gerência (para mostrar opção de comprovante)
+                        const member = await message.guild.members.fetch(message.author.id);
+                        const isGerencia = member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
+                                          member.roles.cache.has(process.env.CARGO_LIDER_ID);
                         
-                        if (isComprovanteFlow) {
-                            console.log(`📎 Fluxo de comprovante detectado, não mostrar dropdown de farm`);
-                            // Marcar contexto de comprovante
-                            comprovanteCache.set(cacheKey, Date.now());
-                            return;
-                        }
-                        
-                        // MOSTRAR DROPDOWN DE FARM
-                        await mostrarDropdownFarm(message);
+                        // MOSTRAR DROPDOWN DE FARM (com opção de comprovante para gerência)
+                        await mostrarDropdownFarm(message, isGerencia);
                     } else {
                         console.log(`❌ ${message.author.tag} não tem permissão para registrar farm neste canal`);
                         await message.react('❌');
@@ -96,38 +45,6 @@ module.exports = {
                 }
             }
             
-            // 3. VERIFICAR SE É MENSAGEM DE TEXTO EM CANAL DE PASTA FARM (para contexto de comprovante)
-            if (message.content && message.content.length > 0 && !message.attachments.size) {
-                const isPastaFarm = await verificarSeEPastaFarm(message.channel);
-                
-                if (isPastaFarm) {
-                    // Verificar se a mensagem indica comprovante
-                    const isComprovanteMessage = message.content.toLowerCase().includes('comprovante') ||
-                                                message.content.toLowerCase().includes('pagamento') ||
-                                                message.content.toLowerCase().includes('paguei') ||
-                                                message.content.toLowerCase().includes('transferi');
-                    
-                    if (isComprovanteMessage) {
-                        const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-                        if (!member) return;
-                        
-                        const isGerencia = member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
-                                          member.roles.cache.has(process.env.CARGO_LIDER_ID);
-                        
-                        if (isGerencia) {
-                            console.log(`📎 Mensagem de comprovante detectada de ${message.author.tag}`);
-                            comprovanteCache.set(cacheKey, Date.now());
-                            
-                            // Responder com instruções
-                            await message.reply({
-                                content: '📎 **DETECTADO CONTEXTO DE COMPROVANTE!**\n\nAgora anexe a imagem do comprovante. O bot NÃO irá processar como um registro de farm.',
-                                flags: 64
-                            });
-                        }
-                    }
-                }
-            }
-            
         } catch (error) {
             console.error('❌ Erro ao processar mensagem:', error);
             // Não responder para não criar spam
@@ -136,124 +53,6 @@ module.exports = {
 };
 
 // FUNÇÕES AUXILIARES
-
-async function processarComoComprovante(message, cacheKey) {
-    try {
-        console.log(`📎 Processando imagem como comprovante de ${message.author.tag}`);
-        
-        // Adicionar reação de confirmação
-        await message.react('✅');
-        
-        // Buscar última mensagem do bot sobre comprovante
-        const messages = await message.channel.messages.fetch({ limit: 10 });
-        const botMessages = messages.filter(msg => 
-            msg.author.id === message.client.user.id && 
-            (msg.content.includes('COMPROVANTE') || msg.content.includes('comprovante'))
-        );
-        
-        if (botMessages.size > 0) {
-            const lastBotMessage = botMessages.first();
-            
-            // Atualizar embed anterior se existir
-            if (lastBotMessage.embeds.length > 0) {
-                const originalEmbed = lastBotMessage.embeds[0];
-                const embed = {
-                    title: originalEmbed.title || '✅ COMPROVANTE ENVIADO',
-                    description: '✅ **COMPROVANTE ENVIADO COM SUCESSO!**\n\nO pagamento foi registrado e o comprovante foi anexado.',
-                    color: 0x00FF00,
-                    fields: originalEmbed.fields || [],
-                    timestamp: originalEmbed.timestamp || new Date().toISOString(),
-                    footer: originalEmbed.footer || { text: 'Sistema de Farm - Facção' }
-                };
-                
-                // Adicionar campo do comprovante
-                embed.fields.push({
-                    name: '🖼️ Comprovante',
-                    value: `[Clique para ver](${message.attachments.first().url})`,
-                    inline: true
-                });
-                
-                await lastBotMessage.edit({
-                    content: `✅ **COMPROVANTE DE PAGAMENTO REGISTRADO!**\n\n${originalEmbed.fields?.find(f => f.name.includes('Membro'))?.value || '👤 Membro confirmado'}`,
-                    embeds: [embed]
-                });
-                
-                console.log(`✅ Embed de comprovante atualizado para ${message.author.tag}`);
-            } else {
-                // Criar novo embed se não existir
-                const embed = {
-                    title: '✅ COMPROVANTE ENVIADO',
-                    description: '✅ **COMPROVANTE ENVIADO COM SUCESSO!**',
-                    color: 0x00FF00,
-                    fields: [
-                        {
-                            name: '🖼️ Comprovante',
-                            value: `[Clique para ver](${message.attachments.first().url})`,
-                            inline: true
-                        },
-                        {
-                            name: '👤 Enviado por',
-                            value: message.author.toString(),
-                            inline: true
-                        },
-                        {
-                            name: '📅 Data',
-                            value: new Date().toLocaleDateString('pt-BR'),
-                            inline: true
-                        }
-                    ],
-                    timestamp: new Date().toISOString(),
-                    footer: { text: 'Sistema de Farm - Facção' }
-                };
-                
-                await message.channel.send({
-                    content: `✅ **COMPROVANTE REGISTRADO POR ${message.author.username}**`,
-                    embeds: [embed]
-                });
-            }
-        } else {
-            // Criar nova mensagem de confirmação
-            const embed = {
-                title: '✅ COMPROVANTE ENVIADO',
-                description: '✅ **COMPROVANTE ENVIADO COM SUCESSO!**\n\nO bot NÃO processou esta imagem como um registro de farm.',
-                color: 0x00FF00,
-                fields: [
-                    {
-                        name: '🖼️ Comprovante',
-                        value: `[Clique para ver](${message.attachments.first().url})`,
-                        inline: true
-                    },
-                    {
-                        name: '👤 Enviado por',
-                        value: message.author.toString(),
-                        inline: true
-                    },
-                    {
-                        name: '📅 Data',
-                        value: new Date().toLocaleDateString('pt-BR'),
-                        inline: true
-                    }
-                ],
-                timestamp: new Date().toISOString(),
-                footer: { text: 'Sistema de Farm - Facção' }
-            };
-            
-            await message.channel.send({
-                content: `📎 **COMPROVANTE REGISTRADO!**`,
-                embeds: [embed]
-            });
-        }
-        
-        // Limpar cache após processamento
-        comprovanteCache.delete(cacheKey);
-        
-        console.log(`✅ Comprovante processado com sucesso para ${message.author.tag}`);
-        
-    } catch (error) {
-        console.error('❌ Erro ao processar comprovante:', error);
-        comprovanteCache.delete(cacheKey);
-    }
-}
 
 async function verificarSeEPastaFarm(channel) {
     try {
@@ -309,55 +108,53 @@ async function verificarPermissaoFarm(message) {
     }
 }
 
-async function buscarUltimaMensagemBot(channel) {
+async function mostrarDropdownFarm(message, isGerencia) {
     try {
-        const messages = await channel.messages.fetch({ limit: 10 });
-        const botMessages = messages.filter(msg => msg.author.id === channel.client.user.id);
+        console.log(`📋 Mostrando dropdown de farm para ${message.author.tag} (Gerência: ${isGerencia})`);
         
-        if (botMessages.size > 0) {
-            return botMessages.first();
+        // Criar menu de seleção
+        const selectMenuOptions = [
+            {
+                label: 'Dinheiro Sujo',
+                description: 'Dinheiro ilegal farmado',
+                value: 'Dinheiro Sujo',
+                emoji: '💰'
+            },
+            {
+                label: 'Bateria',
+                description: 'Componente de bateria',
+                value: 'Bateria',
+                emoji: '🔋'
+            },
+            {
+                label: 'Placa de Circuito',
+                description: 'Placa de circuito eletrônico',
+                value: 'Placa de Circuito',
+                emoji: '🔌'
+            }
+        ];
+        
+        // Adicionar opção de comprovante apenas para gerência
+        if (isGerencia) {
+            selectMenuOptions.push({
+                label: '💰 Comprovante de Pagamento',
+                description: 'Registrar pagamento do farm (apenas gerência)',
+                value: 'comprovante_pagamento',
+                emoji: '🧾'
+            });
         }
         
-        return null;
-    } catch (error) {
-        console.error('❌ Erro ao buscar mensagens do bot:', error);
-        return null;
-    }
-}
-
-async function mostrarDropdownFarm(message) {
-    try {
-        console.log(`📋 Mostrando dropdown de farm para ${message.author.tag}`);
-        
-        // Criar menu de seleção SIMPLES
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('selecionar_tipo_farm')
-            .setPlaceholder('Selecione o tipo de farm')
-            .addOptions([
-                {
-                    label: 'Dinheiro Sujo',
-                    description: 'Dinheiro ilegal farmado',
-                    value: 'Dinheiro Sujo',
-                    emoji: '💰'
-                },
-                {
-                    label: 'Bateria',
-                    description: 'Componente de bateria',
-                    value: 'Bateria',
-                    emoji: '🔋'
-                },
-                {
-                    label: 'Placa de Circuito',
-                    description: 'Placa de circuito eletrônico',
-                    value: 'Placa de Circuito',
-                    emoji: '🔌'
-                }
-            ]);
+            .setPlaceholder(isGerencia ? 'Selecione o tipo de farm ou comprovante' : 'Selecione o tipo de farm')
+            .addOptions(selectMenuOptions);
 
         const row = new ActionRowBuilder().addComponents(selectMenu);
 
         const reply = await message.reply({
-            content: '📸 **IMAGEM DETECTADA!**\nSelecione o tipo de farm abaixo:',
+            content: isGerencia 
+                ? '📸 **IMAGEM DETECTADA!**\nSelecione abaixo:\n• **Farm** - Para registrar farm normal\n• **Comprovante** - Para registrar pagamento (apenas gerência)'
+                : '📸 **IMAGEM DETECTADA!**\nSelecione o tipo de farm abaixo:',
             components: [row]
         });
         
