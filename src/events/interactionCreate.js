@@ -6,28 +6,46 @@ const { registrarMembroModal, editarFarmModal, criarPastaFarm } = require('../co
 const comprovanteHandler = require('../components/comprovanteDropdown');
 const encomendaComponents = require('../components/encomendas');
 
-// Sistema de lock para evitar duplicação
-const activeInteractions = new Set();
+// Sistema de lock melhorado
+const activeInteractions = new Map();
+
+async function checkInteraction(interaction) {
+    const key = `${interaction.id}_${interaction.user.id}_${interaction.customId || interaction.commandName}`;
+    
+    // Verificar se já está processando
+    if (activeInteractions.has(key)) {
+        console.log(`⚠️ Interação duplicada detectada: ${key}`);
+        
+        // Se já passou tempo suficiente, permitir nova tentativa
+        const timestamp = activeInteractions.get(key);
+        const now = Date.now();
+        
+        if (now - timestamp < 3000) { // 3 segundos
+            console.log(`⏰ Interação muito recente, ignorando...`);
+            return false;
+        }
+    }
+    
+    // Registrar nova interação
+    activeInteractions.set(key, Date.now());
+    
+    // Limpar interações antigas automaticamente (após 30 segundos)
+    setTimeout(() => {
+        if (activeInteractions.has(key)) {
+            activeInteractions.delete(key);
+        }
+    }, 30000);
+    
+    return true;
+}
 
 module.exports = {
     name: Events.InteractionCreate,
     async execute(interaction, client) {
-        // Criar ID único para esta interação
-        const interactionKey = `${interaction.id}_${interaction.user.id}`;
-        
-        // Verificar se já está processando
-        if (activeInteractions.has(interactionKey)) {
-            console.log(`⚠️ Interação ${interactionKey} já em processamento`);
+        // Verificar se é uma interação duplicada
+        if (!(await checkInteraction(interaction))) {
             return;
         }
-        
-        // Adicionar ao conjunto ativo
-        activeInteractions.add(interactionKey);
-        
-        // Remover após 5 segundos (timeout de segurança)
-        setTimeout(() => {
-            activeInteractions.delete(interactionKey);
-        }, 5000);
         
         try {
             // Log simples
@@ -83,9 +101,6 @@ module.exports = {
             
         } catch (error) {
             console.error('❌ Erro geral:', error);
-        } finally {
-            // Limpar do conjunto ativo
-            activeInteractions.delete(interactionKey);
         }
     },
 };
@@ -1005,28 +1020,63 @@ function getProdutoEmoji(nome) {
     return '📦';
 }
 
+// FUNÇÃO COMPLETA PARA FECHAR FARM
 async function fecharFarmHandler(interaction, semana, ano, canalId) {
     console.log(`🔒 Tentando fechar farm: semana ${semana}, ano ${ano}, canal ${canalId}`);
     
     try {
-        // TENTAR deferReply com timeout
+        // VERIFICAR se a interação já foi respondida
+        if (interaction.replied || interaction.deferred) {
+            console.log('⚠️ Interação já foi respondida anteriormente');
+            
+            // Enviar nova mensagem em vez de usar a interação
+            try {
+                await interaction.channel.send({
+                    content: `⚠️ **Erro ao processar!**\n\nPor favor, aguarde alguns segundos e clique novamente no botão "FECHAR FARM".`,
+                    flags: 64
+                });
+            } catch (channelError) {
+                console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
+            }
+            return;
+        }
+        
+        // TENTAR deferReply com tratamento
+        let podeResponder = false;
         try {
-            await interaction.deferReply({ flags: 64 }); // ephemeral: true
+            await interaction.deferReply({ flags: 64 });
             console.log('✅ deferReply bem-sucedido');
+            podeResponder = true;
         } catch (deferError) {
-            console.log('⚠️ deferReply falhou, tentando responder normalmente:', deferError.message);
+            console.log('⚠️ deferReply falhou:', deferError.message);
             
             // Se defer falhar, tentar responder normalmente
             try {
                 await interaction.reply({ 
                     content: '⏳ Processando...', 
-                    flags: 64,
-                    ephemeral: true 
+                    flags: 64
                 });
+                console.log('✅ Reply normal bem-sucedido');
+                podeResponder = true;
             } catch (replyError) {
-                console.error('❌ Não foi possível responder à interação:', replyError.message);
+                console.error('❌ Não foi possível responder:', replyError.message);
+                
+                // Última tentativa: enviar mensagem normal
+                try {
+                    await interaction.channel.send({
+                        content: '⚠️ **Erro ao processar! Por favor, tente novamente em alguns segundos.**',
+                        flags: 64
+                    });
+                } catch (channelError) {
+                    console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
+                }
                 return;
             }
+        }
+        
+        if (!podeResponder) {
+            console.log('❌ Não é possível responder a esta interação');
+            return;
         }
         
         // Verificar se é gerência
@@ -1041,7 +1091,6 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         }
         
         // Buscar informações da pasta
-        const supabase = require('../database/supabase');
         const { data: pasta, error: pastaError } = await supabase
             .from('pastas_farm')
             .select(`
@@ -1082,9 +1131,6 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         }
         
         console.log('✅ Pasta atualizada no banco');
-        
-        // Importar EmbedBuilder
-        const { EmbedBuilder } = require('discord.js');
         
         const embed = new EmbedBuilder()
             .setTitle('🔒 FARM FECHADO')
@@ -1130,12 +1176,21 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
             } else {
                 await interaction.reply({
                     content: `❌ Erro ao fechar farm: ${error.message || 'Erro desconhecido'}`,
-                    flags: 64,
-                    ephemeral: true
+                    flags: 64
                 });
             }
         } catch (finalError) {
             console.error('❌ Não foi possível responder com erro:', finalError.message);
+            
+            // Enviar mensagem no canal como último recurso
+            try {
+                await interaction.channel.send({
+                    content: `❌ **Erro ao fechar farm!**\n\n${error.message || 'Erro desconhecido'}\n\nPor favor, contate a administração.`,
+                    flags: 64
+                });
+            } catch (channelError) {
+                console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
+            }
         }
     }
 }
