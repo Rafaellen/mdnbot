@@ -349,8 +349,9 @@ module.exports = {
                                 .update({ 
                                     quantidade_original: farm.quantidade, // Salvar valor original
                                     quantidade: 0, // Zerar para próxima semana
-                                    resetado_em: new Date().toISOString(),
-                                    resetado_por: interaction.user.id
+                                    pago: true,
+                                    pago_em: new Date().toISOString(),
+                                    pago_por: interaction.user.id
                                 })
                                 .eq('id', farm.id);
                             
