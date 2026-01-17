@@ -1006,14 +1006,35 @@ function getProdutoEmoji(nome) {
 }
 
 async function fecharFarmHandler(interaction, semana, ano, canalId) {
+    console.log(`🔒 Tentando fechar farm: semana ${semana}, ano ${ano}, canal ${canalId}`);
+    
     try {
-        await interaction.deferReply({ ephemeral: true });
+        // TENTAR deferReply com timeout
+        try {
+            await interaction.deferReply({ flags: 64 }); // ephemeral: true
+            console.log('✅ deferReply bem-sucedido');
+        } catch (deferError) {
+            console.log('⚠️ deferReply falhou, tentando responder normalmente:', deferError.message);
+            
+            // Se defer falhar, tentar responder normalmente
+            try {
+                await interaction.reply({ 
+                    content: '⏳ Processando...', 
+                    flags: 64,
+                    ephemeral: true 
+                });
+            } catch (replyError) {
+                console.error('❌ Não foi possível responder à interação:', replyError.message);
+                return;
+            }
+        }
         
         // Verificar se é gerência
         const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
                            interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
         
         if (!isGerencia) {
+            console.log('❌ Usuário não é gerência');
             return interaction.editReply({
                 content: '❌ Apenas gerência pode fechar farms!'
             });
@@ -1033,10 +1054,13 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
             .single();
         
         if (pastaError || !pasta) {
+            console.log('❌ Pasta farm não encontrada:', pastaError?.message || 'Sem dados');
             return interaction.editReply({
                 content: '❌ Pasta farm não encontrada!'
             });
         }
+        
+        console.log(`✅ Pasta encontrada para membro: ${pasta.membros?.nome}`);
         
         // Marcar como fechada
         const { error: updateError } = await supabase
@@ -1053,38 +1077,65 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         if (updateError) {
             console.error('❌ Erro ao fechar pasta:', updateError);
             return interaction.editReply({
-                content: '❌ Erro ao fechar pasta farm.'
+                content: '❌ Erro ao fechar pasta farm no banco de dados.'
             });
         }
+        
+        console.log('✅ Pasta atualizada no banco');
+        
+        // Importar EmbedBuilder
+        const { EmbedBuilder } = require('discord.js');
         
         const embed = new EmbedBuilder()
             .setTitle('🔒 FARM FECHADO')
             .setColor(0x00FF00)
-            .setDescription(`**Farm da semana ${semana} de ${ano} foi oficialmente fechado!**`)
+            .setDescription(`**Farm da semana ${semana} de ${ano} foi oficialmente fechado e pago!**`)
             .addFields(
                 { name: '👤 Membro', value: pasta.membros?.nome || 'Desconhecido', inline: true },
                 { name: '📅 Semana', value: `${semana}/${ano}`, inline: true },
-                { name: '🛠️ Fechado por', value: interaction.user.username, inline: true }
+                { name: '🛠️ Fechado por', value: interaction.user.username, inline: true },
+                { name: '✅ Status', value: 'Pagamento confirmado', inline: true }
             )
             .setFooter({ text: 'Farm marcado como fechado e pago' })
             .setTimestamp();
         
-        // Atualizar a mensagem original (remover botões)
-        await interaction.message.edit({
-            components: []
-        });
+        console.log('✅ Embed criado');
         
+        // Atualizar a mensagem original (remover botões)
+        try {
+            await interaction.message.edit({
+                components: []
+            });
+            console.log('✅ Botões removidos da mensagem original');
+        } catch (editError) {
+            console.log('⚠️ Não foi possível remover botões:', editError.message);
+        }
+        
+        // Responder ao usuário
         await interaction.editReply({
-            content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**`,
+            content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**\n\nO pagamento foi registrado e a pasta foi marcada como fechada.`,
             embeds: [embed]
         });
         
-        console.log(`✅ Farm fechado para canal ${canalId}, semana ${semana}`);
+        console.log(`✅ Farm fechado com sucesso para ${pasta.membros?.nome}`);
         
     } catch (error) {
         console.error('❌ Erro ao fechar farm:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
+        
+        try {
+            if (interaction.deferred || interaction.replied) {
+                await interaction.editReply({
+                    content: `❌ Erro ao fechar farm: ${error.message || 'Erro desconhecido'}`
+                });
+            } else {
+                await interaction.reply({
+                    content: `❌ Erro ao fechar farm: ${error.message || 'Erro desconhecido'}`,
+                    flags: 64,
+                    ephemeral: true
+                });
+            }
+        } catch (finalError) {
+            console.error('❌ Não foi possível responder com erro:', finalError.message);
+        }
     }
 }

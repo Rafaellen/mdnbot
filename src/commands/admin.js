@@ -24,13 +24,30 @@ module.exports = {
             console.log(`❌ ${interaction.user.tag} não tem permissão para /fecharpastas`);
             return interaction.reply({
                 content: '❌ Apenas gerência pode usar este comando!',
-                ephemeral: true
+                flags: 64
             });
         }
 
         console.log('⏳ Processando /fecharpastas...');
         
-        await interaction.deferReply();
+        // TENTAR deferReply com tratamento de erro robusto
+        try {
+            await interaction.deferReply();
+            console.log('✅ deferReply bem-sucedido');
+        } catch (deferError) {
+            console.error('❌ Erro ao defer reply:', deferError.message);
+            
+            // Tentar responder normalmente
+            try {
+                await interaction.reply({
+                    content: '⏳ Processando comando...',
+                    flags: 64
+                });
+            } catch (replyError) {
+                console.error('❌ Não foi possível responder:', replyError.message);
+                return;
+            }
+        }
 
         try {
             // Obter semana atual
@@ -391,22 +408,51 @@ async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo, pa
                         );
                     }
                     
-                    // Enviar mensagem no canal
+                    // Enviar mensagem no canal com timeout e fallback
                     const mensagemConteudo = temFarm 
                         ? `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. **Você tem pagamento pendente de $${valorPagamento.toLocaleString('pt-BR')}!**`
                         : `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. Você não teve farm esta semana.`;
                     
-                    await canal.send({
-                        content: mensagemConteudo,
-                        embeds: [notificacaoEmbed],
-                        components: temFarm ? [botoes] : []
-                    });
-                    
-                    enviadas++;
-                    console.log(`   ✅ Notificação enviada para ${membroNome} ${temFarm ? '(com pagamento)' : '(sem pagamento)'}`);
+                    try {
+                        // Tentar com timeout
+                        await Promise.race([
+                            canal.send({
+                                content: mensagemConteudo,
+                                embeds: [notificacaoEmbed],
+                                components: temFarm ? [botoes] : []
+                            }),
+                            new Promise((_, reject) => 
+                                setTimeout(() => reject(new Error('Timeout ao enviar mensagem')), 5000)
+                            )
+                        ]);
+                        
+                        enviadas++;
+                        console.log(`   ✅ Notificação enviada para ${membroNome} ${temFarm ? '(com pagamento)' : '(sem pagamento)'}`);
+                        
+                    } catch (sendError) {
+                        console.log(`   ⚠️ Erro ao enviar para ${membroNome}:`, sendError.message);
+                        
+                        // Tentar sem menção @here como fallback
+                        try {
+                            const mensagemFallback = temFarm 
+                                ? `**ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. **Você tem pagamento pendente de $${valorPagamento.toLocaleString('pt-BR')}!**`
+                                : `**ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. Você não teve farm esta semana.`;
+                            
+                            await canal.send({
+                                content: mensagemFallback,
+                                embeds: [notificacaoEmbed],
+                                components: temFarm ? [botoes] : []
+                            });
+                            
+                            enviadas++;
+                            console.log(`   ✅ Notificação enviada (fallback) para ${membroNome}`);
+                        } catch (retryError) {
+                            console.log(`   ❌ Falha definitiva para ${membroNome}:`, retryError.message);
+                        }
+                    }
                 }
             } catch (canalError) {
-                console.log(`   ❌ Erro ao enviar para canal ${pasta.canal_id}:`, canalError.message);
+                console.log(`   ❌ Erro ao buscar canal ${pasta.canal_id}:`, canalError.message);
             }
         }
 
