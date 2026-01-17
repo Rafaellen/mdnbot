@@ -401,7 +401,7 @@ async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo, pa
                     if (temFarm) {
                         botoes.addComponents(
                             new ButtonBuilder()
-                                .setCustomId(`fechar_farm_${semanaNumero}_${ano}_${pasta.canal_id}`)
+                                .setCustomId(`fechar_farm_${semanaNumero}_${ano}_${pasta.canal_id}_${Date.now()}`) // TIMESTAMP ADICIONADO
                                 .setLabel('💰 FECHAR FARM')
                                 .setStyle(ButtonStyle.Success)
                                 .setEmoji('💰')

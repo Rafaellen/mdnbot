@@ -5,6 +5,9 @@ const { iniciarFarmSimples, processarModalFarmSimples } = require('../components
 const { registrarMembroModal, editarFarmModal, criarPastaFarm } = require('../components/registro');
 const comprovanteHandler = require('../components/comprovanteDropdown');
 const encomendaComponents = require('../components/encomendas');
+const processedButtons = new Set();
+const PROCESS_TIMEOUT = 10000; // 10 segundos
+
 
 // Sistema de lock melhorado
 const activeInteractions = new Map();
@@ -240,7 +243,8 @@ async function handleButton(interaction, client) {
         const semana = customIdParts[2];
         const ano = customIdParts[3];
         const canalId = customIdParts[4];
-    
+        // timestamp = customIdParts[5] // Não necessário para o processamento
+
         await fecharFarmHandler(interaction, semana, ano, canalId);
         return;
     }
@@ -1020,74 +1024,71 @@ function getProdutoEmoji(nome) {
     return '📦';
 }
 
-// FUNÇÃO COMPLETA PARA FECHAR FARM
 async function fecharFarmHandler(interaction, semana, ano, canalId) {
+
+    const buttonId = `${interaction.id}_${interaction.user.id}`;
+    
+    // Verificar se já processou este botão recentemente
+    if (!canProcessButton(buttonId)) {
+        console.log(`⏰ Ignorando clique duplicado no botão: ${buttonId}`);
+        
+        // Remover botões mesmo assim para evitar múltiplos cliques
+        try {
+            await interaction.message.edit({
+                components: []
+            });
+        } catch (error) {
+            // Ignorar erro
+        }
+        return;
+    }
+    
     console.log(`🔒 Tentando fechar farm: semana ${semana}, ano ${ano}, canal ${canalId}`);
     
     try {
-        // VERIFICAR se a interação já foi respondida
-        if (interaction.replied || interaction.deferred) {
-            console.log('⚠️ Interação já foi respondida anteriormente');
-            
-            // Enviar nova mensagem em vez de usar a interação
-            try {
-                await interaction.channel.send({
-                    content: `⚠️ **Erro ao processar!**\n\nPor favor, aguarde alguns segundos e clique novamente no botão "FECHAR FARM".`,
-                    flags: 64
-                });
-            } catch (channelError) {
-                console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
-            }
-            return;
-        }
-        
-        // TENTAR deferReply com tratamento
-        let podeResponder = false;
-        try {
-            await interaction.deferReply({ flags: 64 });
-            console.log('✅ deferReply bem-sucedido');
-            podeResponder = true;
-        } catch (deferError) {
-            console.log('⚠️ deferReply falhou:', deferError.message);
-            
-            // Se defer falhar, tentar responder normalmente
-            try {
-                await interaction.reply({ 
-                    content: '⏳ Processando...', 
-                    flags: 64
-                });
-                console.log('✅ Reply normal bem-sucedido');
-                podeResponder = true;
-            } catch (replyError) {
-                console.error('❌ Não foi possível responder:', replyError.message);
-                
-                // Última tentativa: enviar mensagem normal
-                try {
-                    await interaction.channel.send({
-                        content: '⚠️ **Erro ao processar! Por favor, tente novamente em alguns segundos.**',
-                        flags: 64
-                    });
-                } catch (channelError) {
-                    console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
-                }
-                return;
-            }
-        }
-        
-        if (!podeResponder) {
-            console.log('❌ Não é possível responder a esta interação');
-            return;
-        }
-        
         // Verificar se é gerência
         const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
                            interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
         
         if (!isGerencia) {
-            console.log('❌ Usuário não é gerência');
-            return interaction.editReply({
-                content: '❌ Apenas gerência pode fechar farms!'
+            // Enviar mensagem direta no canal se não conseguir responder à interação
+            try {
+                await interaction.reply({
+                    content: '❌ Apenas gerência pode fechar farms!',
+                    flags: 64
+                });
+            } catch (replyError) {
+                console.log('⚠️ Não foi possível responder, enviando mensagem no canal...');
+                await interaction.channel.send({
+                    content: `❌ <@${interaction.user.id}> Apenas gerência pode fechar farms!`,
+                    flags: 64
+                });
+            }
+            return;
+        }
+        
+        // ATUALIZAR IMEDIATAMENTO - remover botões da mensagem original
+        try {
+            await interaction.message.edit({
+                components: []
             });
+            console.log('✅ Botões removidos da mensagem original');
+        } catch (editError) {
+            console.log('⚠️ Não foi possível remover botões:', editError.message);
+        }
+        
+        // ENVIAR MENSAGEM DE PROCESSAMENTO
+        let mensagemProcessando;
+        try {
+            mensagemProcessando = await interaction.reply({
+                content: '⏳ **Processando fechamento de farm...**',
+                flags: 64,
+                fetchReply: true
+            });
+            console.log('✅ Mensagem de processamento enviada');
+        } catch (replyError) {
+            console.log('⚠️ Não foi possível responder, continuando processamento...');
+            // Continuar mesmo sem resposta
         }
         
         // Buscar informações da pasta
@@ -1104,9 +1105,18 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         
         if (pastaError || !pasta) {
             console.log('❌ Pasta farm não encontrada:', pastaError?.message || 'Sem dados');
-            return interaction.editReply({
-                content: '❌ Pasta farm não encontrada!'
-            });
+            
+            if (mensagemProcessando) {
+                await mensagemProcessando.edit({
+                    content: '❌ Pasta farm não encontrada!'
+                });
+            } else {
+                await interaction.channel.send({
+                    content: '❌ Pasta farm não encontrada!',
+                    flags: 64
+                });
+            }
+            return;
         }
         
         console.log(`✅ Pasta encontrada para membro: ${pasta.membros?.nome}`);
@@ -1125,9 +1135,18 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         
         if (updateError) {
             console.error('❌ Erro ao fechar pasta:', updateError);
-            return interaction.editReply({
-                content: '❌ Erro ao fechar pasta farm no banco de dados.'
-            });
+            
+            if (mensagemProcessando) {
+                await mensagemProcessando.edit({
+                    content: '❌ Erro ao fechar pasta farm no banco de dados.'
+                });
+            } else {
+                await interaction.channel.send({
+                    content: '❌ Erro ao fechar pasta farm no banco de dados.',
+                    flags: 64
+                });
+            }
+            return;
         }
         
         console.log('✅ Pasta atualizada no banco');
@@ -1147,21 +1166,19 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         
         console.log('✅ Embed criado');
         
-        // Atualizar a mensagem original (remover botões)
-        try {
-            await interaction.message.edit({
-                components: []
+        // Atualizar mensagem ou enviar nova
+        if (mensagemProcessando) {
+            await mensagemProcessando.edit({
+                content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**\n\nO pagamento foi registrado e a pasta foi marcada como fechada.`,
+                embeds: [embed]
             });
-            console.log('✅ Botões removidos da mensagem original');
-        } catch (editError) {
-            console.log('⚠️ Não foi possível remover botões:', editError.message);
+        } else {
+            await interaction.channel.send({
+                content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**\n\nO pagamento foi registrado e a pasta foi marcada como fechada.`,
+                embeds: [embed],
+                flags: 64
+            });
         }
-        
-        // Responder ao usuário
-        await interaction.editReply({
-            content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**\n\nO pagamento foi registrado e a pasta foi marcada como fechada.`,
-            embeds: [embed]
-        });
         
         console.log(`✅ Farm fechado com sucesso para ${pasta.membros?.nome}`);
         
@@ -1169,28 +1186,28 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         console.error('❌ Erro ao fechar farm:', error);
         
         try {
-            if (interaction.deferred || interaction.replied) {
-                await interaction.editReply({
-                    content: `❌ Erro ao fechar farm: ${error.message || 'Erro desconhecido'}`
-                });
-            } else {
-                await interaction.reply({
-                    content: `❌ Erro ao fechar farm: ${error.message || 'Erro desconhecido'}`,
-                    flags: 64
-                });
-            }
-        } catch (finalError) {
-            console.error('❌ Não foi possível responder com erro:', finalError.message);
-            
-            // Enviar mensagem no canal como último recurso
-            try {
-                await interaction.channel.send({
-                    content: `❌ **Erro ao fechar farm!**\n\n${error.message || 'Erro desconhecido'}\n\nPor favor, contate a administração.`,
-                    flags: 64
-                });
-            } catch (channelError) {
-                console.error('❌ Não foi possível enviar mensagem no canal:', channelError.message);
-            }
+            await interaction.channel.send({
+                content: `❌ **Erro ao fechar farm!**\n\n${error.message || 'Erro desconhecido'}\n\nPor favor, contate a administração.`,
+                flags: 64
+            });
+        } catch (channelError) {
+            console.error('❌ Não foi possível enviar mensagem de erro:', channelError.message);
         }
     }
+}
+
+function canProcessButton(interactionId) {
+    if (processedButtons.has(interactionId)) {
+        console.log(`⏰ Botão ${interactionId} já processado recentemente`);
+        return false;
+    }
+    
+    processedButtons.add(interactionId);
+    
+    // Remover após timeout
+    setTimeout(() => {
+        processedButtons.delete(interactionId);
+    }, PROCESS_TIMEOUT);
+    
+    return true;
 }
