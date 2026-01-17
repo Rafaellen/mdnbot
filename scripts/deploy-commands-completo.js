@@ -1,17 +1,17 @@
-const { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { REST, Routes } = require('discord.js');
 require('dotenv').config();
 
-// Carregar comandos dos arquivos
+// Carregar comandos dos arquivos (removendo registros.js que não existe)
 const adminCommand = require('../src/commands/admin');
 const farmCommand = require('../src/commands/farm');
 const encomendaCommand = require('../src/commands/encomenda');
-const registrosCommand = require('../src/commands/registros'); // NOVO: comando de registros
 
+// Apenas comandos que existem
 const commands = [
     adminCommand.data.toJSON(),
     farmCommand.data.toJSON(),
-    encomendaCommand.data.toJSON(),
-    registrosCommand.data.toJSON() // NOVO: adicionar comando de registros
+    encomendaCommand.data.toJSON()
+    // Removido: registrosCommand.data.toJSON()
 ];
 
 console.log('📋 Comandos a serem registrados:');
@@ -36,8 +36,8 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         console.log(`🔧 Client ID: ${process.env.CLIENT_ID}`);
         console.log(`🏠 Guild ID: ${process.env.GUILD_ID}`);
         
-        // Registrar no servidor específico
-        console.log('\n1. 📍 Registrando comandos no servidor...');
+        // Registrar comandos APENAS no servidor específico
+        console.log('\n📍 Registrando comandos no servidor...');
         const guildData = await rest.put(
             Routes.applicationGuildCommands(
                 process.env.CLIENT_ID,
@@ -48,28 +48,17 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         
         console.log(`✅ ${guildData.length} comandos registrados no servidor!`);
         
-        // Tentar registrar globalmente também (opcional)
-        console.log('\n2. 🌐 Registrando comandos globalmente...');
-        try {
-            const globalData = await rest.put(
-                Routes.applicationCommands(process.env.CLIENT_ID),
-                { body: commands }
-            );
-            console.log(`✅ ${globalData.length} comandos registrados globalmente!`);
-        } catch (globalError) {
-            console.log('⚠️  Não foi possível registrar globalmente (pode ser normal):', globalError.message);
-        }
-        
         console.log('\n🎉 Comandos registrados com sucesso!');
         console.log('\n💡 Comandos disponíveis:');
         console.log('   /fecharpastas - Fechar todas as pastas farms e gerar resumo semanal');
         console.log('   /resumofarm - Ver resumo de farm semanal');
         console.log('   /encomenda - Gerenciar sistema de encomendas');
-        console.log('   /registros - Gerenciar logs de registro de membros');
-        console.log('\n💡 Agora no Discord:');
-        console.log('   1. Digite "/" para ver os comandos');
-        console.log('   2. Aguarde alguns segundos se não aparecer');
-        console.log('   3. Reinicie o Discord se necessário');
+        console.log('   ⚠️ NOTA: Alguns comandos requerem cargo de gerência para uso');
+        
+        console.log('\n🔧 Para limpar comandos antigos:');
+        console.log('   node scripts/clear-commands.js');
+        console.log('\n🔍 Para verificar comandos:');
+        console.log('   node scripts/check-commands.js');
         
     } catch (error) {
         console.error('\n❌ ERRO AO REGISTRAR COMANDOS:');
@@ -78,21 +67,12 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         if (error.code === 50001) {
             console.error('\n🔑 ERRO: Missing Access');
             console.error('O bot não tem permissão no servidor!');
-            console.error('\n🔧 SOLUÇÃO:');
-            console.error('1. Vá ao Discord Developer Portal');
-            console.error('2. Selecione seu aplicativo');
-            console.error('3. Vá em OAuth2 > URL Generator');
-            console.error('4. Selecione: bot + applications.commands');
-            console.error('5. Selecione permissões necessárias');
-            console.error('6. Use o link gerado para readicionar o bot ao servidor');
         } else if (error.code === 50013) {
             console.error('\n🔑 ERRO: Missing Permissions');
             console.error('O bot não tem permissões suficientes!');
-            console.error('\n🔧 Dê permissão de Administrador ao bot temporariamente.');
-        } else if (error.rawError) {
-            console.error('Detalhes:', JSON.stringify(error.rawError, null, 2));
         }
         
+        console.error('\n🔧 Dê permissão de Administrador ao bot temporariamente ou use o OAuth2 URL Generator.');
         process.exit(1);
     }
 })();

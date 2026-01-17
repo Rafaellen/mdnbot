@@ -225,8 +225,8 @@ async function handleButton(interaction, client) {
         const semana = customIdParts[2];
         const ano = customIdParts[3];
         const canalId = customIdParts[4];
-        
-        await comprovanteHandler.fecharFarm(interaction, semana, ano, canalId);
+    
+        await fecharFarmHandler(interaction, semana, ano, canalId);
         return;
     }
     
@@ -1003,4 +1003,88 @@ function getProdutoEmoji(nome) {
     if (nomeLower.includes('jammer')) return '📡';
     if (nomeLower.includes('cartão') || nomeLower.includes('cartao')) return '💳';
     return '📦';
+}
+
+async function fecharFarmHandler(interaction, semana, ano, canalId) {
+    try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        // Verificar se é gerência
+        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
+                           interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
+        
+        if (!isGerencia) {
+            return interaction.editReply({
+                content: '❌ Apenas gerência pode fechar farms!'
+            });
+        }
+        
+        // Buscar informações da pasta
+        const supabase = require('../database/supabase');
+        const { data: pasta, error: pastaError } = await supabase
+            .from('pastas_farm')
+            .select(`
+                id,
+                membros (
+                    nome
+                )
+            `)
+            .eq('canal_id', canalId)
+            .single();
+        
+        if (pastaError || !pasta) {
+            return interaction.editReply({
+                content: '❌ Pasta farm não encontrada!'
+            });
+        }
+        
+        // Marcar como fechada
+        const { error: updateError } = await supabase
+            .from('pastas_farm')
+            .update({ 
+                ativa: false,
+                semana_fechada: semana,
+                ano_fechada: ano,
+                fechado_por: interaction.user.id,
+                fechado_em: new Date().toISOString()
+            })
+            .eq('canal_id', canalId);
+        
+        if (updateError) {
+            console.error('❌ Erro ao fechar pasta:', updateError);
+            return interaction.editReply({
+                content: '❌ Erro ao fechar pasta farm.'
+            });
+        }
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🔒 FARM FECHADO')
+            .setColor(0x00FF00)
+            .setDescription(`**Farm da semana ${semana} de ${ano} foi oficialmente fechado!**`)
+            .addFields(
+                { name: '👤 Membro', value: pasta.membros?.nome || 'Desconhecido', inline: true },
+                { name: '📅 Semana', value: `${semana}/${ano}`, inline: true },
+                { name: '🛠️ Fechado por', value: interaction.user.username, inline: true }
+            )
+            .setFooter({ text: 'Farm marcado como fechado e pago' })
+            .setTimestamp();
+        
+        // Atualizar a mensagem original (remover botões)
+        await interaction.message.edit({
+            components: []
+        });
+        
+        await interaction.editReply({
+            content: `✅ **Farm de ${pasta.membros?.nome || 'membro'} fechado com sucesso!**`,
+            embeds: [embed]
+        });
+        
+        console.log(`✅ Farm fechado para canal ${canalId}, semana ${semana}`);
+        
+    } catch (error) {
+        console.error('❌ Erro ao fechar farm:', error);
+        await interaction.editReply({
+            content: `❌ Erro: ${error.message}`
+        });
+    }
 }

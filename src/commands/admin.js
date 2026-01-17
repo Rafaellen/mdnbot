@@ -1,23 +1,21 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
 const supabase = require('../database/supabase');
 
 // CONFIGURAÇÕES DE PAGAMENTO
 const META_SEMANAL_SUJO = 200000; // Meta semanal por membro: 200.000
 const PORCENTAGEM_MEMBRO = 0.60; // 60% para o membro após meta
 const PORCENTAGEM_FAMILIA = 0.40; // 40% para a família após meta
-const PORCENTAGEM_LAVAGEM = 0.60; // 60% da lavagem (correção do exemplo)
+const PORCENTAGEM_LAVAGEM = 0.60; // 60% da lavagem
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('fecharpastas')
         .setDescription('Fechar todas as pastas farms e gerar resumo semanal'),
-        // REMOVIDO: .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        // Agora a verificação de permissão é feita no código interno
     
     async execute(interaction) {
         console.log(`🔧 /fecharpastas executado por: ${interaction.user.tag} (${interaction.user.id})`);
         
-        // Verificar se é gerência (agora apenas no código, não na permissão do comando)
+        // Verificar se é gerência
         const member = interaction.member;
         const cargosGerencia = [process.env.CARGO_GERENCIA_ID, process.env.CARGO_LIDER_ID];
         const temPermissao = member.roles.cache.some(role => cargosGerencia.includes(role.id));
@@ -26,28 +24,13 @@ module.exports = {
             console.log(`❌ ${interaction.user.tag} não tem permissão para /fecharpastas`);
             return interaction.reply({
                 content: '❌ Apenas gerência pode usar este comando!',
-                flags: 64
+                ephemeral: true
             });
         }
 
         console.log('⏳ Processando /fecharpastas...');
         
-        // CORREÇÃO: Usar try-catch para deferReply
-        try {
-            await interaction.deferReply();
-        } catch (error) {
-            console.error('❌ Erro ao defer reply:', error.message);
-            // Tentar responder normalmente
-            try {
-                await interaction.reply({
-                    content: '⏳ Processando comando...',
-                    flags: 64
-                });
-            } catch (replyError) {
-                console.error('❌ Não foi possível responder:', replyError.message);
-                return;
-            }
-        }
+        await interaction.deferReply();
 
         try {
             // Obter semana atual
@@ -56,23 +39,19 @@ module.exports = {
             const ano = data.getFullYear();
 
             console.log(`📊 Gerando resumo da semana ${semanaNumero} de ${ano}...`);
-            console.log(`💰 Configurações: Meta semanal: ${META_SEMANAL_SUJO.toLocaleString('pt-BR')} | Lavagem: ${PORCENTAGEM_LAVAGEM*100}% | Membro: ${PORCENTAGEM_MEMBRO*100}% | Família: ${PORCENTAGEM_FAMILIA*100}%`);
 
-            // 1. BUSCAR TODOS OS MEMBROS CADASTRADOS (COM TRATAMENTO DE ERRO)
+            // 1. BUSCAR TODOS OS MEMBROS CADASTRADOS
             console.log('👥 Buscando todos os membros cadastrados...');
             
             let todosMembros = [];
             try {
-                // Tentar buscar com a coluna ativo
                 const { data: membrosData, error: membrosError } = await supabase
                     .from('membros')
                     .select('id, nome, discord_id, ativo')
                     .order('nome');
                 
                 if (membrosError) {
-                    console.log('⚠️ Erro ao buscar membros com ativo:', membrosError.message);
-                    
-                    // Tentar buscar sem a coluna ativo
+                    console.log('⚠️ Erro ao buscar membros:', membrosError.message);
                     const { data: membrosData2, error: membrosError2 } = await supabase
                         .from('membros')
                         .select('id, nome, discord_id')
@@ -83,11 +62,8 @@ module.exports = {
                     }
                     
                     todosMembros = membrosData2 || [];
-                    console.log(`⚠️ Coluna 'ativo' não encontrada, usando todos os ${todosMembros.length} membros`);
                 } else {
-                    // Se a coluna ativo existe, filtrar apenas os ativos
                     todosMembros = (membrosData || []).filter(m => m.ativo !== false);
-                    console.log(`✅ ${todosMembros.length} membros ativos encontrados`);
                 }
             } catch (error) {
                 console.error('❌ Erro ao buscar membros:', error);
@@ -98,7 +74,7 @@ module.exports = {
                 throw new Error('Nenhum membro encontrado no banco de dados!');
             }
 
-            console.log(`👥 Total de membros a processar: ${todosMembros?.length || 0}`);
+            console.log(`👥 Total de membros a processar: ${todosMembros.length}`);
 
             // 2. BUSCAR TODOS OS FARMS DA SEMANA
             const { data: farms, error: errorFarms } = await supabase
@@ -122,12 +98,10 @@ module.exports = {
 
             console.log(`📈 Encontrados ${farms?.length || 0} farms esta semana`);
 
-            // 3. INICIALIZAR ESTRUTURAS PARA TODOS OS MEMBROS
+            // 3. INICIALIZAR ESTRUTURAS
             const resumo = {};
             const pagamentos = {};
-            const membrosComFarms = new Set();
             
-            // Inicializar todos os membros (mesmo os que não farmaram)
             todosMembros.forEach(membro => {
                 const nome = membro.nome || 'Desconhecido';
                 
@@ -153,26 +127,18 @@ module.exports = {
                 };
             });
             
-            // 4. PROCESSAR FARMS ENCONTRADOS
+            // 4. PROCESSAR FARMS
             let totalGeral = 0;
             let totalDinheiroSujo = 0;
             let totalPagamentoMembros = 0;
             let totalFamília = 0;
             
             if (farms && farms.length > 0) {
-                console.log('🔍 Processando farms encontrados:');
-                farms.forEach((farm, index) => {
+                farms.forEach((farm) => {
                     const nome = farm.membros?.nome || 'Desconhecido';
-                    const membroId = farm.membro_id;
-                    membrosComFarms.add(nome);
-                    
-                    // Converter tipo para chave do objeto
                     const tipo = farm.tipo_farm?.toLowerCase().replace(/\s+/g, '_') || 'desconhecido';
                     const quantidade = farm.quantidade || 0;
                     
-                    console.log(`   ${index + 1}. ${nome}: ${farm.tipo_farm} -> ${tipo} = ${quantidade}`);
-                    
-                    // Acumular valores
                     if (resumo[nome]) {
                         if (tipo === 'dinheiro_sujo') {
                             resumo[nome].dinheiro_sujo += quantidade;
@@ -190,50 +156,31 @@ module.exports = {
                 });
             }
             
-            console.log(`📊 Membros com farm esta semana: ${membrosComFarms.size}`);
-            
-            // 5. CALCULAR PAGAMENTOS PARA CADA MEMBRO (INCLUINDO OS QUE NÃO FARMARAM)
-            console.log('\n💰 Calculando pagamentos para TODOS os membros...');
+            // 5. CALCULAR PAGAMENTOS
+            console.log('\n💰 Calculando pagamentos...');
             for (const [nome, dados] of Object.entries(resumo)) {
                 const pagamento = pagamentos[nome];
                 const dinheiroTotal = pagamento.dinheiro_sujo_total;
                 
-                console.log(`   👤 ${nome}: ${dinheiroTotal.toLocaleString('pt-BR')} dinheiro sujo`);
-                
-                // Verificar se atingiu a meta
                 if (dinheiroTotal >= META_SEMANAL_SUJO) {
                     pagamento.atingiu_meta = true;
                     const acimaMeta = dinheiroTotal - META_SEMANAL_SUJO;
                     pagamento.valor_acima_meta = acimaMeta;
                     
-                    // Calcular lavagem: 60% do valor acima da meta
                     const valorLavado = acimaMeta * PORCENTAGEM_LAVAGEM;
                     pagamento.valor_lavado = Math.floor(valorLavado);
                     
-                    // Calcular 60% para membro, 40% para família do valor lavado
                     pagamento.pagamento_membro = Math.floor(valorLavado * PORCENTAGEM_MEMBRO);
                     pagamento.pagamento_familia = Math.floor(valorLavado * PORCENTAGEM_FAMILIA);
                     
                     totalPagamentoMembros += pagamento.pagamento_membro;
                     totalFamília += pagamento.pagamento_familia;
-                    
-                    console.log(`     ✅ Atingiu meta! Acima: ${acimaMeta.toLocaleString('pt-BR')}`);
-                    console.log(`       💰 Lavado (${PORCENTAGEM_LAVAGEM*100}%): ${pagamento.valor_lavado.toLocaleString('pt-BR')}`);
-                    console.log(`       👛 Membro (${PORCENTAGEM_MEMBRO*100}%): ${pagamento.pagamento_membro.toLocaleString('pt-BR')}`);
-                    console.log(`       🏠 Família (${PORCENTAGEM_FAMILIA*100}%): ${pagamento.pagamento_familia.toLocaleString('pt-BR')}`);
                 } else {
                     pagamento.atingiu_meta = false;
                     pagamento.valor_acima_meta = 0;
                     pagamento.valor_lavado = 0;
                     pagamento.pagamento_membro = 0;
                     pagamento.pagamento_familia = 0;
-                    
-                    if (dinheiroTotal > 0) {
-                        const falta = META_SEMANAL_SUJO - dinheiroTotal;
-                        console.log(`     ❌ Não atingiu meta (faltam ${falta.toLocaleString('pt-BR')})`);
-                    } else {
-                        console.log(`     📭 Sem farm esta semana`);
-                    }
                 }
             }
             
@@ -246,7 +193,6 @@ module.exports = {
             // 6. CRIAR RESUMO DETALHADO
             console.log('📝 Criando resumo detalhado...');
             
-            // Criar embed principal
             const embed = new EmbedBuilder()
                 .setTitle(`📊 RESUMO SEMANAL COMPLETO - Semana ${semanaNumero}`)
                 .setDescription(`**Relatório de TODOS os membros da semana ${semanaNumero} de ${ano}**\n\n💰 **Total geral:** ${totalGeral.toLocaleString('pt-BR')} itens\n👥 **Total membros:** ${todosMembros.length}\n💵 **Total dinheiro sujo:** ${totalDinheiroSujo.toLocaleString('pt-BR')}\n👛 **Pagamento total membros:** ${totalPagamentoMembros.toLocaleString('pt-BR')}\n🏠 **Total família:** ${totalFamília.toLocaleString('pt-BR')}`)
@@ -263,90 +209,39 @@ module.exports = {
                     text: `Fechado por: ${interaction.user.username} • ${new Date().toLocaleDateString('pt-BR')}`
                 });
 
-            // 7. CRIAR TEXTO DETALHADO PARA ANEXO
-            let textoDetalhado = `📊 RESUMO SEMANAL - Semana ${semanaNumero} de ${ano}\n`;
-            textoDetalhado += `📅 Data: ${new Date().toLocaleDateString('pt-BR')}\n`;
-            textoDetalhado += `👤 Fechado por: ${interaction.user.username}\n`;
-            textoDetalhado += `👥 Total membros: ${todosMembros.length}\n`;
-            textoDetalhado += `💰 Total dinheiro sujo: ${totalDinheiroSujo.toLocaleString('pt-BR')}\n`;
-            textoDetalhado += `👛 Pagamento total membros: ${totalPagamentoMembros.toLocaleString('pt-BR')}\n`;
-            textoDetalhado += `🏠 Total família: ${totalFamília.toLocaleString('pt-BR')}\n\n`;
-            textoDetalhado += '='.repeat(50) + '\n\n';
-            textoDetalhado += 'REGRAS DE PAGAMENTO:\n';
-            textoDetalhado += `• Meta semanal: ${META_SEMANAL_SUJO.toLocaleString('pt-BR')} dinheiro sujo\n`;
-            textoDetalhado += `• Acima da meta: ${PORCENTAGEM_LAVAGEM*100}% lavagem\n`;
-            textoDetalhado += `• Do valor lavado: ${PORCENTAGEM_MEMBRO*100}% membro | ${PORCENTAGEM_FAMILIA*100}% família\n\n`;
-            textoDetalhado += '='.repeat(50) + '\n\n';
-
-            // Adicionar detalhes por membro no embed (limitado a 25 campos)
-            const membrosArray = Object.entries(resumo);
-            const grupos = [];
-            for (let i = 0; i < membrosArray.length; i += 25) {
-                grupos.push(membrosArray.slice(i, i + 25));
-            }
-
-            // Adicionar também no texto detalhado
-            textoDetalhado += 'DETALHES POR MEMBRO:\n\n';
+            // Adicionar alguns membros ao embed (limitado)
+            const membrosComFarm = Object.entries(resumo).filter(([_, dados]) => dados.dinheiro_sujo > 0);
+            const membrosParaMostrar = membrosComFarm.slice(0, 15);
             
-            for (const [nome, dados] of Object.entries(resumo)) {
-                const pagamento = pagamentos[nome];
-                
-                // Texto para arquivo
-                textoDetalhado += `👤 ${nome}:\n`;
-                textoDetalhado += `  💰 Dinheiro Sujo: ${dados.dinheiro_sujo.toLocaleString('pt-BR')}\n`;
-                textoDetalhado += `  🔋 Bateria: ${dados.bateria.toLocaleString('pt-BR')}\n`;
-                textoDetalhado += `  🔌 Placa Circuito: ${dados.placa_circuito.toLocaleString('pt-BR')}\n`;
-                textoDetalhado += `  📊 Total itens: ${dados.total_itens.toLocaleString('pt-BR')}\n`;
-                
-                if (pagamento.atingiu_meta) {
-                    textoDetalhado += `  ✅ Meta: ATINGIDA\n`;
-                    textoDetalhado += `    💰 Acima da meta: ${pagamento.valor_acima_meta.toLocaleString('pt-BR')}\n`;
-                    textoDetalhado += `    🧼 Valor lavado (${PORCENTAGEM_LAVAGEM*100}%): ${pagamento.valor_lavado.toLocaleString('pt-BR')}\n`;
-                    textoDetalhado += `    👛 Pagamento membro (${PORCENTAGEM_MEMBRO*100}%): ${pagamento.pagamento_membro.toLocaleString('pt-BR')}\n`;
-                    textoDetalhado += `    🏠 Para família (${PORCENTAGEM_FAMILIA*100}%): ${pagamento.pagamento_familia.toLocaleString('pt-BR')}\n`;
-                } else {
-                    if (pagamento.dinheiro_sujo_total > 0) {
-                        const falta = META_SEMANAL_SUJO - pagamento.dinheiro_sujo_total;
-                        textoDetalhado += `  ❌ Meta: NÃO ATINGIDA (faltam ${falta.toLocaleString('pt-BR')})\n`;
-                        textoDetalhado += `    👛 Pagamento: 0\n`;
-                    } else {
-                        textoDetalhado += `  📭 Sem farm esta semana\n`;
-                        textoDetalhado += `    👛 Pagamento: 0\n`;
-                    }
-                }
-                textoDetalhado += '\n' + '-'.repeat(40) + '\n\n';
-            }
-
-            // Adicionar primeiro grupo ao embed
-            if (grupos.length > 0) {
-                grupos[0].forEach(([nome, dados]) => {
+            if (membrosParaMostrar.length > 0) {
+                let membrosText = '';
+                membrosParaMostrar.forEach(([nome, dados]) => {
                     const pagamento = pagamentos[nome];
-                    let valorPagamento = '💰 Pagamento: **0**';
-                    
                     if (pagamento.atingiu_meta) {
-                        valorPagamento = `💰 Pagamento: **${pagamento.pagamento_membro.toLocaleString('pt-BR')}**\n( ${pagamento.valor_acima_meta.toLocaleString('pt-BR')} × ${PORCENTAGEM_LAVAGEM*100}% × ${PORCENTAGEM_MEMBRO*100}% )`;
-                    } else if (pagamento.dinheiro_sujo_total > 0) {
-                        const falta = META_SEMANAL_SUJO - pagamento.dinheiro_sujo_total;
-                        valorPagamento = `🎯 Meta não atingida: faltam **${falta.toLocaleString('pt-BR')}**`;
+                        membrosText += `**${nome}**: ${dados.dinheiro_sujo.toLocaleString('pt-BR')} → $${pagamento.pagamento_membro.toLocaleString('pt-BR')}\n`;
                     } else {
-                        valorPagamento = '📭 Sem farm esta semana';
+                        membrosText += `**${nome}**: ${dados.dinheiro_sujo.toLocaleString('pt-BR')} → Meta não atingida\n`;
                     }
-                    
-                    embed.addFields({
-                        name: `👤 ${nome}`,
-                        value: `💰 Sujo: **${dados.dinheiro_sujo.toLocaleString('pt-BR')}**\n🔋 Bateria: **${dados.bateria.toLocaleString('pt-BR')}**\n🔌 Placa: **${dados.placa_circuito.toLocaleString('pt-BR')}**\n${valorPagamento}`,
-                        inline: true
-                    });
+                });
+                
+                if (membrosComFarm.length > 15) {
+                    membrosText += `\n... e mais ${membrosComFarm.length - 15} membros`;
+                }
+                
+                embed.addFields({
+                    name: '👤 MEMBROS COM FARM',
+                    value: membrosText || 'Nenhum farm esta semana',
+                    inline: false
                 });
             }
 
-            // 8. ENVIAR NOTIFICAÇÃO DE FECHAMENTO COM BOTÃO "FECHAR FARM"
-            console.log('📢 Enviando notificação de fechamento para todas as pastas...');
-            await enviarNotificacaoFechamento(interaction.client, semanaNumero, ano, resumo);
+            // 7. ENVIAR NOTIFICAÇÃO PARA TODAS AS PASTAS
+            console.log('📢 Enviando notificação para todas as pastas...');
+            await enviarNotificacaoFechamento(interaction.client, semanaNumero, ano, resumo, pagamentos);
 
-            // 9. ATUALIZAR STATUS DAS PASTAS
+            // 8. ATUALIZAR STATUS DAS PASTAS
             console.log('📁 Atualizando status das pastas farm...');
-            const { error: errorUpdate, count: pastasAtualizadas } = await supabase
+            const { error: errorUpdate } = await supabase
                 .from('pastas_farm')
                 .update({ 
                     ativa: false, 
@@ -361,82 +256,57 @@ module.exports = {
                 console.error('❌ Erro ao atualizar pastas:', errorUpdate);
                 mensagemPastas = 'Não foi possível atualizar o status das pastas farm.';
             } else {
-                console.log(`✅ ${pastasAtualizadas || 0} pastas farm marcadas como fechadas`);
-                mensagemPastas = `🔄 ${pastasAtualizadas || 0} pastas foram fechadas.`;
+                mensagemPastas = 'Todas as pastas foram fechadas.';
             }
 
-            // 10. CRIAR REGISTRO DA SEMANA
-            try {
-                const dataInicio = getMonday(data);
-                const dataFim = new Date(dataInicio);
-                dataFim.setDate(dataFim.getDate() + 6);
-
-                const { error: errorSemana } = await supabase
-                    .from('semanas_farm')
-                    .insert([
-                        {
-                            semana_numero: semanaNumero,
-                            ano: ano,
-                            data_inicio: dataInicio.toISOString().split('T')[0],
-                            data_fim: dataFim.toISOString().split('T')[0],
-                            fechada: true,
-                            total_farms: farms?.length || 0,
-                            total_itens: totalGeral,
-                            total_membros: todosMembros.length,
-                            total_dinheiro_sujo: totalDinheiroSujo,
-                            total_pagamento_membros: totalPagamentoMembros,
-                            total_familia: totalFamília,
-                            meta_semanal: META_SEMANAL_SUJO,
-                            porcentagem_lavagem: PORCENTAGEM_LAVAGEM,
-                            porcentagem_membro: PORCENTAGEM_MEMBRO,
-                            porcentagem_familia: PORCENTAGEM_FAMILIA,
-                            fechado_por: interaction.user.id,
-                            fechado_em: new Date().toISOString()
-                        }
-                    ]);
-
-                if (errorSemana) {
-                    console.log('ℹ️  Não foi possível registrar a semana:', errorSemana.message);
+            // 9. CRIAR ARQUIVO DE RESUMO
+            let textoDetalhado = `📊 RESUMO SEMANAL - Semana ${semanaNumero} de ${ano}\n`;
+            textoDetalhado += `📅 Data: ${new Date().toLocaleDateString('pt-BR')}\n`;
+            textoDetalhado += `👤 Fechado por: ${interaction.user.username}\n`;
+            textoDetalhado += `👥 Total membros: ${todosMembros.length}\n`;
+            textoDetalhado += `💰 Total dinheiro sujo: ${totalDinheiroSujo.toLocaleString('pt-BR')}\n`;
+            textoDetalhado += `👛 Pagamento total membros: ${totalPagamentoMembros.toLocaleString('pt-BR')}\n`;
+            textoDetalhado += `🏠 Total família: ${totalFamília.toLocaleString('pt-BR')}\n\n`;
+            textoDetalhado += '='.repeat(50) + '\n\n';
+            
+            // Detalhes por membro
+            textoDetalhado += 'DETALHES POR MEMBRO:\n\n';
+            for (const [nome, dados] of Object.entries(resumo)) {
+                const pagamento = pagamentos[nome];
+                
+                textoDetalhado += `👤 ${nome}:\n`;
+                textoDetalhado += `  💰 Dinheiro Sujo: ${dados.dinheiro_sujo.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  🔋 Bateria: ${dados.bateria.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  🔌 Placa Circuito: ${dados.placa_circuito.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  📊 Total itens: ${dados.total_itens.toLocaleString('pt-BR')}\n`;
+                
+                if (pagamento.atingiu_meta) {
+                    textoDetalhado += `  ✅ Meta: ATINGIDA\n`;
+                    textoDetalhado += `    💰 Acima da meta: ${pagamento.valor_acima_meta.toLocaleString('pt-BR')}\n`;
+                    textoDetalhado += `    👛 Pagamento: ${pagamento.pagamento_membro.toLocaleString('pt-BR')}\n`;
                 } else {
-                    console.log('✅ Semana registrada na tabela semanas_farm');
+                    if (pagamento.dinheiro_sujo_total > 0) {
+                        const falta = META_SEMANAL_SUJO - pagamento.dinheiro_sujo_total;
+                        textoDetalhado += `  ❌ Meta: NÃO ATINGIDA (faltam ${falta.toLocaleString('pt-BR')})\n`;
+                    } else {
+                        textoDetalhado += `  📭 Sem farm esta semana\n`;
+                    }
+                    textoDetalhado += `    👛 Pagamento: 0\n`;
                 }
-            } catch (semanaError) {
-                console.log('ℹ️  Tabela semanas_farm não existe ou erro:', semanaError.message);
+                textoDetalhado += '\n' + '-'.repeat(40) + '\n\n';
             }
 
-            // 11. CRIAR ARQUIVO DE RESUMO
             const buffer = Buffer.from(textoDetalhado, 'utf-8');
             const attachment = new AttachmentBuilder(buffer, { 
                 name: `resumo_semana_${semanaNumero}_${ano}.txt`,
                 description: `Resumo detalhado da semana ${semanaNumero}`
             });
 
-            // 12. CRIAR BOTÕES PARA GERÊNCIA
-            const botoesGerencia = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`enviar_comprovante_${semanaNumero}_${ano}`)
-                        .setLabel('📎 ENVIAR COMPROVANTE')
-                        .setStyle(ButtonStyle.Primary)
-                        .setEmoji('📎'),
-                    new ButtonBuilder()
-                        .setCustomId(`ver_detalhes_${semanaNumero}_${ano}`)
-                        .setLabel('📊 VER DETALHES')
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji('📊'),
-                    new ButtonBuilder()
-                        .setCustomId(`gerar_pagamentos_${semanaNumero}_${ano}`)
-                        .setLabel('💰 GERAR PAGAMENTOS')
-                        .setStyle(ButtonStyle.Success)
-                        .setEmoji('💰')
-                );
-
-            // 13. ENVIAR RESUMO FINAL
+            // 10. ENVIAR RESUMO FINAL
             await interaction.editReply({
                 embeds: [embed],
                 content: `✅ **SEMANA ${semanaNumero} FECHADA COM SUCESSO!**\n\n📊 Relatório semanal completo gerado.\n👥 **${todosMembros.length} membros** incluídos no relatório.\n📝 Verifique o arquivo anexo para detalhes completos.\n\n${mensagemPastas}`,
-                files: [attachment],
-                components: [botoesGerencia]
+                files: [attachment]
             });
 
             console.log(`✅ /fecharpastas concluído com sucesso!`);
@@ -451,8 +321,8 @@ module.exports = {
     }
 };
 
-// Função para enviar notificação para todas as pastas COM BOTÃO "FECHAR FARM"
-async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo) {
+// Função para enviar notificação para todas as pastas com botão "FECHAR FARM"
+async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo, pagamentos) {
     try {
         // Buscar todas as pastas farm ativas
         const { data: pastas, error } = await supabase
@@ -467,14 +337,6 @@ async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo) {
 
         console.log(`📢 Enviando notificação para ${pastas.length} pastas...`);
 
-        const notificacaoEmbed = new EmbedBuilder()
-            .setTitle('🔒 FARM SEMANAL FECHADO')
-            .setDescription(`**A semana ${semanaNumero} de ${ano} foi oficialmente fechada!**\n\n📊 Todos os farms desta semana foram contabilizados.\n💰 **O pagamento será processado em breve.**\n\n⏳ Aguarde as instruções de pagamento da gerência.`)
-            .setColor(0xFF0000)
-            .setFooter({ text: 'Sistema de Farm - Facção' })
-            .setTimestamp();
-
-        // Criar botão para FECHAR FARM (apenas para gerência)
         let enviadas = 0;
         for (const pasta of pastas) {
             try {
@@ -484,25 +346,60 @@ async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo) {
                     const membroDiscordId = pasta.membros?.discord_id;
                     
                     // Verificar se o membro tem farm na semana
-                    const temFarm = Object.values(resumo).some(m => 
-                        m.membro_id === pasta.membros?.id && m.dinheiro_sujo > 0
-                    );
+                    let temFarm = false;
+                    let valorPagamento = 0;
+                    let dinheiroSujo = 0;
                     
-                    // Criar botão "FECHAR FARM" específico para este canal
-                    const botaoFecharFarm = new ActionRowBuilder()
-                        .addComponents(
+                    // Buscar informações do membro no resumo
+                    for (const [nome, dados] of Object.entries(resumo)) {
+                        if (nome === membroNome) {
+                            temFarm = dados.dinheiro_sujo > 0;
+                            dinheiroSujo = dados.dinheiro_sujo;
+                            
+                            // Buscar pagamento
+                            for (const [nomePag, pagamento] of Object.entries(pagamentos)) {
+                                if (nomePag === membroNome) {
+                                    valorPagamento = pagamento.pagamento_membro;
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    
+                    const notificacaoEmbed = new EmbedBuilder()
+                        .setTitle('🔒 FARM SEMANAL FECHADO')
+                        .setDescription(`**A semana ${semanaNumero} de ${ano} foi oficialmente fechada!**\n\n📊 Todos os farms desta semana foram contabilizados.\n💰 **Seu pagamento será processado em breve.**\n\n⏳ Aguarde as instruções de pagamento da gerência.`)
+                        .setColor(0xFF0000)
+                        .addFields(
+                            { name: '💰 Dinheiro Sujo Farmado', value: `${dinheiroSujo.toLocaleString('pt-BR')}`, inline: true },
+                            { name: '📊 Status', value: temFarm ? '✅ Com farm' : '📭 Sem farm', inline: true }
+                        )
+                        .setFooter({ text: 'Sistema de Farm - Facção' })
+                        .setTimestamp();
+                    
+                    // Criar botão "FECHAR FARM" apenas para membros que farmaram
+                    const botoes = new ActionRowBuilder();
+                    
+                    if (temFarm) {
+                        botoes.addComponents(
                             new ButtonBuilder()
                                 .setCustomId(`fechar_farm_${semanaNumero}_${ano}_${pasta.canal_id}`)
-                                .setLabel('🔒 FECHAR FARM')
-                                .setStyle(ButtonStyle.Danger)
-                                .setEmoji('🔒')
-                                .setDisabled(!temFarm) // Desabilitar se não tem farm
+                                .setLabel('💰 FECHAR FARM')
+                                .setStyle(ButtonStyle.Success)
+                                .setEmoji('💰')
                         );
+                    }
+                    
+                    // Enviar mensagem no canal
+                    const mensagemConteudo = temFarm 
+                        ? `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. **Você tem pagamento pendente de $${valorPagamento.toLocaleString('pt-BR')}!**`
+                        : `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. Você não teve farm esta semana.`;
                     
                     await canal.send({
-                        content: `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. ${temFarm ? 'Você tem pagamento pendente!' : 'Você não teve farm esta semana.'}`,
+                        content: mensagemConteudo,
                         embeds: [notificacaoEmbed],
-                        components: temFarm ? [botaoFecharFarm] : []
+                        components: temFarm ? [botoes] : []
                     });
                     
                     enviadas++;
