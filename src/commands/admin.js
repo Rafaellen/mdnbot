@@ -319,12 +319,67 @@ module.exports = {
                 description: `Resumo detalhado da semana ${semanaNumero}`
             });
 
-            // 10. ENVIAR RESUMO FINAL
+            // 10. RESETAR CONTAGEM DE DINHEIRO SUJO (MANTENDO REGISTROS HISTÓRICOS)
+            console.log('\n🔄 RESETANDO CONTAGEM DE DINHEIRO SUJO PARA NOVA SEMANA...');
+            
+            let mensagemReset = '';
+            try {
+                // Buscar todos os registros de dinheiro sujo da semana
+                const { data: farmsSujo, error: farmsError } = await supabase
+                    .from('farm_semanal')
+                    .select('id, quantidade, membro_id, tipo_farm, membros(nome)')
+                    .eq('semana_id', semanaNumero)
+                    .eq('ano', ano)
+                    .eq('tipo_farm', 'Dinheiro Sujo');
+
+                if (farmsError) {
+                    console.error('❌ Erro ao buscar farms de dinheiro sujo:', farmsError);
+                    mensagemReset = '⚠️ Não foi possível buscar registros para resetar.';
+                } else {
+                    const totalRegistros = farmsSujo?.length || 0;
+                    console.log(`📊 Encontrados ${totalRegistros} registros de dinheiro sujo para resetar`);
+                    
+                    if (totalRegistros > 0) {
+                        let resetados = 0;
+                        
+                        // Para cada registro, salvar o valor original e zerar a quantidade
+                        for (const farm of farmsSujo) {
+                            const { error: updateError } = await supabase
+                                .from('farm_semanal')
+                                .update({ 
+                                    quantidade_original: farm.quantidade, // Salvar valor original
+                                    quantidade: 0, // Zerar para próxima semana
+                                    resetado_em: new Date().toISOString(),
+                                    resetado_por: interaction.user.id
+                                })
+                                .eq('id', farm.id);
+                            
+                            if (updateError) {
+                                console.error(`❌ Erro ao resetar farm ${farm.id}:`, updateError);
+                            } else {
+                                resetados++;
+                                console.log(`   ✅ ${farm.membros?.nome || 'Membro'}: ${farm.quantidade.toLocaleString('pt-BR')} → 0`);
+                            }
+                        }
+                        
+                        mensagemReset = `🔄 ${resetados}/${totalRegistros} registros de dinheiro sujo resetados para 0.`;
+                        console.log(`✅ ${resetados} registros resetados com sucesso!`);
+                    } else {
+                        mensagemReset = '📭 Nenhum registro de dinheiro sujo encontrado para resetar.';
+                        console.log('📭 Nenhum registro de dinheiro sujo para resetar');
+                    }
+                }
+            } catch (resetError) {
+                console.error('❌ Erro no processo de reset:', resetError);
+                mensagemReset = '⚠️ Erro ao resetar contagem de dinheiro sujo.';
+            }
+
+            // 11. ENVIAR RESUMO FINAL
             await interaction.editReply({
                 embeds: [embed],
-                content: `✅ **SEMANA ${semanaNumero} FECHADA COM SUCESSO!**\n\n📊 Relatório semanal completo gerado.\n👥 **${todosMembros.length} membros** incluídos no relatório.\n📝 Verifique o arquivo anexo para detalhes completos.\n\n${mensagemPastas}`,
+                content: `✅ **SEMANA ${semanaNumero} FECHADA COM SUCESSO!**\n\n📊 Relatório semanal completo gerado.\n👥 **${todosMembros.length} membros** incluídos no relatório.\n🔄 **${mensagemReset}**\n📝 Verifique o arquivo anexo para detalhes completos.\n\n${mensagemPastas}`,
                 files: [attachment]
-            });
+            });            
 
             console.log(`✅ /fecharpastas concluído com sucesso!`);
 
