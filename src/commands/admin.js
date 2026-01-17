@@ -1,468 +1,534 @@
-const { 
-    ActionRowBuilder, 
-    ModalBuilder, 
-    TextInputBuilder, 
-    TextInputStyle,
-    EmbedBuilder,
-    ButtonBuilder,
-    ButtonStyle
-} = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
 const supabase = require('../database/supabase');
 
-/**
- * Mostrar modal para registrar comprovante de pagamento (via dropdown)
- */
-async function mostrarModalComprovanteDropdown(interaction) {
-    try {
-        console.log('💰 Mostrando modal para comprovante de pagamento via dropdown...');
+// CONFIGURAÇÕES DE PAGAMENTO
+const META_SEMANAL_SUJO = 200000; // Meta semanal por membro: 200.000
+const PORCENTAGEM_MEMBRO = 0.60; // 60% para o membro após meta
+const PORCENTAGEM_FAMILIA = 0.40; // 40% para a família após meta
+const PORCENTAGEM_LAVAGEM = 0.60; // 60% da lavagem (correção do exemplo)
+
+module.exports = {
+    data: new SlashCommandBuilder()
+        .setName('fecharpastas')
+        .setDescription('Fechar todas as pastas farms e gerar resumo semanal'),
+        // REMOVIDO: .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        // Agora a verificação de permissão é feita no código interno
+    
+    async execute(interaction) {
+        console.log(`🔧 /fecharpastas executado por: ${interaction.user.tag} (${interaction.user.id})`);
         
-        const modal = new ModalBuilder()
-            .setCustomId('modal_comprovante_dropdown')
-            .setTitle('💰 Registrar Comprovante de Pagamento');
-
-        const valorInput = new TextInputBuilder()
-            .setCustomId('valor_input')
-            .setLabel("Valor Pago (Dinheiro Limpo)")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Ex: 108000")
-            .setRequired(true)
-            .setMaxLength(20);
-
-        const semanaInput = new TextInputBuilder()
-            .setCustomId('semana_input')
-            .setLabel("Semana do Pagamento")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Ex: 3 (deixe em branco para semana atual)")
-            .setRequired(false)
-            .setMaxLength(10);
-
-        const observacaoInput = new TextInputBuilder()
-            .setCustomId('observacao_input')
-            .setLabel("Observação (opcional)")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Alguma observação sobre o pagamento...")
-            .setRequired(false)
-            .setMaxLength(500);
-
-        const primeiraLinha = new ActionRowBuilder().addComponents(valorInput);
-        const segundaLinha = new ActionRowBuilder().addComponents(semanaInput);
-        const terceiraLinha = new ActionRowBuilder().addComponents(observacaoInput);
-
-        modal.addComponents(primeiraLinha, segundaLinha, terceiraLinha);
+        // Verificar se é gerência (agora apenas no código, não na permissão do comando)
+        const member = interaction.member;
+        const cargosGerencia = [process.env.CARGO_GERENCIA_ID, process.env.CARGO_LIDER_ID];
+        const temPermissao = member.roles.cache.some(role => cargosGerencia.includes(role.id));
         
-        await interaction.showModal(modal);
-        console.log('✅ Modal de comprovante via dropdown mostrado!');
-        
-    } catch (error) {
-        console.error('❌ Erro ao mostrar modal de comprovante:', error);
-        
-        if (error.code === 40060) {
-            // Interação já reconhecida, tudo bem
-            return;
+        if (!temPermissao) {
+            console.log(`❌ ${interaction.user.tag} não tem permissão para /fecharpastas`);
+            return interaction.reply({
+                content: '❌ Apenas gerência pode usar este comando!',
+                flags: 64
+            });
         }
+
+        console.log('⏳ Processando /fecharpastas...');
         
+        // CORREÇÃO: Usar try-catch para deferReply
         try {
-            if (!interaction.replied && !interaction.deferred) {
+            await interaction.deferReply();
+        } catch (error) {
+            console.error('❌ Erro ao defer reply:', error.message);
+            // Tentar responder normalmente
+            try {
                 await interaction.reply({
-                    content: '❌ Erro ao abrir formulário de comprovante.',
+                    content: '⏳ Processando comando...',
                     flags: 64
                 });
+            } catch (replyError) {
+                console.error('❌ Não foi possível responder:', replyError.message);
+                return;
             }
-        } catch (replyError) {
-            console.error('Não foi possível responder:', replyError);
         }
-    }
-}
 
-/**
- * Processar modal de comprovante via dropdown
- */
-async function processarModalComprovanteDropdown(interaction) {
-    try {
-        await interaction.deferReply({ flags: 64 });
-        
-        const valor = interaction.fields.getTextInputValue('valor_input');
-        const semana = interaction.fields.getTextInputValue('semana_input') || '';
-        const observacao = interaction.fields.getTextInputValue('observacao_input') || '';
-        
-        console.log(`💰 Comprovante via dropdown: Valor: ${valor}, Semana: ${semana || 'atual'}, Obs: ${observacao || 'Nenhuma'}`);
-        
-        // Verificar se é gerência (verificação adicional)
-        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
-                           interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
-        
-        if (!isGerencia) {
-            return interaction.editReply({
-                content: '❌ **Apenas gerência pode registrar comprovantes!**'
-            });
-        }
-        
-        // Verificar valor
-        const valorNum = parseInt(valor.replace(/\./g, '').replace(',', '.'));
-        if (isNaN(valorNum) || valorNum <= 0) {
-            return interaction.editReply({
-                content: '❌ Valor inválido! Digite um número maior que 0.'
-            });
-        }
-        
-        // Determinar semana
-        let semanaNumero;
-        let ano;
-        
-        if (semana) {
-            semanaNumero = parseInt(semana);
-            if (isNaN(semanaNumero) || semanaNumero < 1 || semanaNumero > 53) {
-                return interaction.editReply({
-                    content: '❌ Número da semana inválido! Deve ser entre 1 e 53.'
-                });
-            }
-            ano = new Date().getFullYear();
-        } else {
-            // Usar semana atual
-            const data = new Date();
-            semanaNumero = getWeekNumber(data);
-            ano = data.getFullYear();
-        }
-        
-        // Buscar informações da pasta/membro
-        const { data: pasta, error: pastaError } = await supabase
-            .from('pastas_farm')
-            .select(`
-                canal_id,
-                membros (
-                    id,
-                    nome,
-                    discord_id
-                )
-            `)
-            .eq('canal_id', interaction.channel.id)
-            .single();
-        
-        if (pastaError || !pasta) {
-            return interaction.editReply({
-                content: '❌ Pasta farm não encontrada!'
-            });
-        }
-        
-        const membroNome = pasta.membros?.nome || 'Desconhecido';
-        const membroId = pasta.membros?.id;
-        
-        // Salvar comprovante no banco
-        const { error: saveError } = await supabase
-            .from('comprovantes_pagamento')
-            .insert([
-                {
-                    semana_numero: semanaNumero,
-                    ano: ano,
-                    membro_id: membroId,
-                    membro_nome: membroNome,
-                    valor_pago: valorNum,
-                    observacao: observacao,
-                    enviado_por: interaction.user.id,
-                    enviado_por_nome: interaction.user.username,
-                    canal_id: interaction.channel.id,
-                    data_envio: new Date().toISOString()
-                }
-            ]);
-        
-        if (saveError) {
-            console.error('❌ Erro ao salvar comprovante:', saveError);
-            return interaction.editReply({
-                content: '❌ Erro ao salvar comprovante no banco de dados.'
-            });
-        }
-        
-        // Criar embed de confirmação
-        const embed = new EmbedBuilder()
-            .setTitle('✅ COMPROVANTE REGISTRADO')
-            .setColor(0x00FF00)
-            .addFields(
-                { name: '👤 Membro', value: membroNome, inline: true },
-                { name: '💰 Valor Pago', value: `$${valorNum.toLocaleString('pt-BR')}`, inline: true },
-                { name: '📅 Semana', value: `${semanaNumero}/${ano}`, inline: true },
-                { name: '🛠️ Registrado por', value: interaction.user.username, inline: true },
-                { name: '📅 Data', value: new Date().toLocaleDateString('pt-BR'), inline: true }
-            )
-            .setFooter({ text: 'Comprovante registrado com sucesso!' })
-            .setTimestamp();
-        
-        if (observacao) {
-            embed.addFields({
-                name: '📝 Observação',
-                value: observacao,
-                inline: false
-            });
-        }
-        
-        // Criar botão para fechar farm
-        const botoes = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`fechar_farm_${semanaNumero}_${ano}_${interaction.channel.id}`)
-                    .setLabel('🔒 FECHAR FARM')
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji('🔒'),
-                new ButtonBuilder()
-                    .setCustomId(`ver_comprovantes_${membroId}`)
-                    .setLabel('📋 VER COMPROVANTES')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji('📋')
-            );
-        
-        await interaction.editReply({
-            content: `✅ **COMPROVANTE DE PAGAMENTO REGISTRADO COM SUCESSO!**\n\n💰 **${membroNome}** recebeu **$${valorNum.toLocaleString('pt-BR')}** na semana **${semanaNumero}**.`,
-            embeds: [embed],
-            components: [botoes]
-        });
-        
-        console.log(`✅ Comprovante registrado para ${membroNome} - $${valorNum} (Semana ${semanaNumero})`);
-        
-    } catch (error) {
-        console.error('❌ Erro ao processar comprovante via dropdown:', error);
-        
         try {
-            if (interaction.deferred) {
-                await interaction.editReply({
-                    content: `❌ Erro: ${error.message || 'Erro ao processar comprovante'}`
-                });
-            }
-        } catch (editError) {
-            console.error('Não foi possível editar resposta:', editError);
-        }
-    }
-}
+            // Obter semana atual
+            const data = new Date();
+            const semanaNumero = getWeekNumber(data);
+            const ano = data.getFullYear();
 
-/**
- * Função para fechar farm (marcar como pago)
- */
-async function fecharFarm(interaction, semanaNumero, ano, canalId) {
-    try {
-        await interaction.deferReply({ flags: 64 });
-        
-        // Verificar se é gerência
-        const isGerencia = interaction.member.roles.cache.has(process.env.CARGO_GERENCIA_ID) || 
-                           interaction.member.roles.cache.has(process.env.CARGO_LIDER_ID);
-        
-        if (!isGerencia) {
-            return interaction.editReply({
-                content: '❌ Apenas gerência pode fechar farms!'
-            });
-        }
-        
-        // Buscar informações da pasta
-        const { data: pasta, error: pastaError } = await supabase
-            .from('pastas_farm')
-            .select(`
-                id,
-                membros (
-                    nome
-                )
-            `)
-            .eq('canal_id', canalId)
-            .single();
-        
-        if (pastaError || !pasta) {
-            return interaction.editReply({
-                content: '❌ Pasta farm não encontrada!'
-            });
-        }
-        
-        // Atualizar pasta como fechada
-        const { error: updateError } = await supabase
-            .from('pastas_farm')
-            .update({ 
-                ativa: false,
-                semana_fechada: semanaNumero,
-                ano_fechada: ano,
-                fechado_por: interaction.user.id,
-                fechado_em: new Date().toISOString()
-            })
-            .eq('canal_id', canalId);
-        
-        if (updateError) {
-            console.error('❌ Erro ao fechar pasta:', updateError);
-            return interaction.editReply({
-                content: '❌ Erro ao fechar pasta farm.'
-            });
-        }
-        
-        // Buscar comprovante para esta semana
-        const { data: comprovante, error: comprovanteError } = await supabase
-            .from('comprovantes_pagamento')
-            .select('*')
-            .eq('canal_id', canalId)
-            .eq('semana_numero', semanaNumero)
-            .eq('ano', ano)
-            .order('data_envio', { ascending: false })
-            .limit(1)
-            .single();
-        
-        const embed = new EmbedBuilder()
-            .setTitle('🔒 FARM FECHADO')
-            .setColor(0xFFA500)
-            .setDescription(`**Farm da semana ${semanaNumero} de ${ano} foi fechado!**`)
-            .addFields(
-                { name: '👤 Membro', value: pasta.membros?.nome || 'Desconhecido', inline: true },
-                { name: '📅 Semana', value: `${semanaNumero}/${ano}`, inline: true },
-                { name: '🛠️ Fechado por', value: interaction.user.username, inline: true }
-            )
-            .setFooter({ text: 'Farm marcado como fechado e pago' })
-            .setTimestamp();
-        
-        if (comprovante && !comprovanteError) {
-            embed.addFields(
-                { name: '💰 Valor Pago', value: `$${comprovante.valor_pago?.toLocaleString('pt-BR') || '0'}`, inline: true },
-                { name: '📅 Data do Pagamento', value: new Date(comprovante.data_envio).toLocaleDateString('pt-BR'), inline: true }
-            );
+            console.log(`📊 Gerando resumo da semana ${semanaNumero} de ${ano}...`);
+            console.log(`💰 Configurações: Meta semanal: ${META_SEMANAL_SUJO.toLocaleString('pt-BR')} | Lavagem: ${PORCENTAGEM_LAVAGEM*100}% | Membro: ${PORCENTAGEM_MEMBRO*100}% | Família: ${PORCENTAGEM_FAMILIA*100}%`);
+
+            // 1. BUSCAR TODOS OS MEMBROS CADASTRADOS (COM TRATAMENTO DE ERRO)
+            console.log('👥 Buscando todos os membros cadastrados...');
             
-            if (comprovante.observacao) {
-                embed.addFields({
-                    name: '📝 Observação do Pagamento',
-                    value: comprovante.observacao,
-                    inline: false
+            let todosMembros = [];
+            try {
+                // Tentar buscar com a coluna ativo
+                const { data: membrosData, error: membrosError } = await supabase
+                    .from('membros')
+                    .select('id, nome, discord_id, ativo')
+                    .order('nome');
+                
+                if (membrosError) {
+                    console.log('⚠️ Erro ao buscar membros com ativo:', membrosError.message);
+                    
+                    // Tentar buscar sem a coluna ativo
+                    const { data: membrosData2, error: membrosError2 } = await supabase
+                        .from('membros')
+                        .select('id, nome, discord_id')
+                        .order('nome');
+                    
+                    if (membrosError2) {
+                        throw new Error(`Erro ao buscar membros: ${membrosError2.message}`);
+                    }
+                    
+                    todosMembros = membrosData2 || [];
+                    console.log(`⚠️ Coluna 'ativo' não encontrada, usando todos os ${todosMembros.length} membros`);
+                } else {
+                    // Se a coluna ativo existe, filtrar apenas os ativos
+                    todosMembros = (membrosData || []).filter(m => m.ativo !== false);
+                    console.log(`✅ ${todosMembros.length} membros ativos encontrados`);
+                }
+            } catch (error) {
+                console.error('❌ Erro ao buscar membros:', error);
+                throw new Error(`Erro ao buscar membros: ${error.message}`);
+            }
+
+            if (todosMembros.length === 0) {
+                throw new Error('Nenhum membro encontrado no banco de dados!');
+            }
+
+            console.log(`👥 Total de membros a processar: ${todosMembros?.length || 0}`);
+
+            // 2. BUSCAR TODOS OS FARMS DA SEMANA
+            const { data: farms, error: errorFarms } = await supabase
+                .from('farm_semanal')
+                .select(`
+                    quantidade,
+                    tipo_farm,
+                    membro_id,
+                    membros (
+                        nome,
+                        discord_id
+                    )
+                `)
+                .eq('semana_id', semanaNumero)
+                .eq('ano', ano);
+
+            if (errorFarms) {
+                console.error('❌ Erro ao buscar farms:', errorFarms);
+                throw new Error(`Erro ao buscar farms: ${errorFarms.message}`);
+            }
+
+            console.log(`📈 Encontrados ${farms?.length || 0} farms esta semana`);
+
+            // 3. INICIALIZAR ESTRUTURAS PARA TODOS OS MEMBROS
+            const resumo = {};
+            const pagamentos = {};
+            const membrosComFarms = new Set();
+            
+            // Inicializar todos os membros (mesmo os que não farmaram)
+            todosMembros.forEach(membro => {
+                const nome = membro.nome || 'Desconhecido';
+                
+                resumo[nome] = {
+                    dinheiro_sujo: 0,
+                    bateria: 0,
+                    placa_circuito: 0,
+                    total_itens: 0,
+                    discord_id: membro.discord_id,
+                    membro_id: membro.id
+                };
+                
+                pagamentos[nome] = {
+                    dinheiro_sujo_total: 0,
+                    atingiu_meta: false,
+                    valor_acima_meta: 0,
+                    valor_lavado: 0,
+                    pagamento_membro: 0,
+                    pagamento_familia: 0,
+                    meta_atingida: META_SEMANAL_SUJO,
+                    discord_id: membro.discord_id,
+                    membro_id: membro.id
+                };
+            });
+            
+            // 4. PROCESSAR FARMS ENCONTRADOS
+            let totalGeral = 0;
+            let totalDinheiroSujo = 0;
+            let totalPagamentoMembros = 0;
+            let totalFamília = 0;
+            
+            if (farms && farms.length > 0) {
+                console.log('🔍 Processando farms encontrados:');
+                farms.forEach((farm, index) => {
+                    const nome = farm.membros?.nome || 'Desconhecido';
+                    const membroId = farm.membro_id;
+                    membrosComFarms.add(nome);
+                    
+                    // Converter tipo para chave do objeto
+                    const tipo = farm.tipo_farm?.toLowerCase().replace(/\s+/g, '_') || 'desconhecido';
+                    const quantidade = farm.quantidade || 0;
+                    
+                    console.log(`   ${index + 1}. ${nome}: ${farm.tipo_farm} -> ${tipo} = ${quantidade}`);
+                    
+                    // Acumular valores
+                    if (resumo[nome]) {
+                        if (tipo === 'dinheiro_sujo') {
+                            resumo[nome].dinheiro_sujo += quantidade;
+                            pagamentos[nome].dinheiro_sujo_total += quantidade;
+                            totalDinheiroSujo += quantidade;
+                        } else if (tipo === 'bateria') {
+                            resumo[nome].bateria += quantidade;
+                        } else if (tipo === 'placa_de_circuito' || tipo === 'placa_circuito') {
+                            resumo[nome].placa_circuito += quantidade;
+                        }
+                        
+                        resumo[nome].total_itens += quantidade;
+                        totalGeral += quantidade;
+                    }
                 });
             }
-        }
-        
-        await interaction.editReply({
-            content: `🔒 **FARM FECHADO COM SUCESSO!**\n\nA pasta de ${pasta.membros?.nome || 'membro'} foi marcada como fechada para a semana ${semanaNumero}.`,
-            embeds: [embed],
-            components: [] // Remover botões
-        });
-        
-        console.log(`✅ Farm fechado para canal ${canalId}, semana ${semanaNumero}`);
-        
-    } catch (error) {
-        console.error('❌ Erro ao fechar farm:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
-    }
-}
+            
+            console.log(`📊 Membros com farm esta semana: ${membrosComFarms.size}`);
+            
+            // 5. CALCULAR PAGAMENTOS PARA CADA MEMBRO (INCLUINDO OS QUE NÃO FARMARAM)
+            console.log('\n💰 Calculando pagamentos para TODOS os membros...');
+            for (const [nome, dados] of Object.entries(resumo)) {
+                const pagamento = pagamentos[nome];
+                const dinheiroTotal = pagamento.dinheiro_sujo_total;
+                
+                console.log(`   👤 ${nome}: ${dinheiroTotal.toLocaleString('pt-BR')} dinheiro sujo`);
+                
+                // Verificar se atingiu a meta
+                if (dinheiroTotal >= META_SEMANAL_SUJO) {
+                    pagamento.atingiu_meta = true;
+                    const acimaMeta = dinheiroTotal - META_SEMANAL_SUJO;
+                    pagamento.valor_acima_meta = acimaMeta;
+                    
+                    // Calcular lavagem: 60% do valor acima da meta
+                    const valorLavado = acimaMeta * PORCENTAGEM_LAVAGEM;
+                    pagamento.valor_lavado = Math.floor(valorLavado);
+                    
+                    // Calcular 60% para membro, 40% para família do valor lavado
+                    pagamento.pagamento_membro = Math.floor(valorLavado * PORCENTAGEM_MEMBRO);
+                    pagamento.pagamento_familia = Math.floor(valorLavado * PORCENTAGEM_FAMILIA);
+                    
+                    totalPagamentoMembros += pagamento.pagamento_membro;
+                    totalFamília += pagamento.pagamento_familia;
+                    
+                    console.log(`     ✅ Atingiu meta! Acima: ${acimaMeta.toLocaleString('pt-BR')}`);
+                    console.log(`       💰 Lavado (${PORCENTAGEM_LAVAGEM*100}%): ${pagamento.valor_lavado.toLocaleString('pt-BR')}`);
+                    console.log(`       👛 Membro (${PORCENTAGEM_MEMBRO*100}%): ${pagamento.pagamento_membro.toLocaleString('pt-BR')}`);
+                    console.log(`       🏠 Família (${PORCENTAGEM_FAMILIA*100}%): ${pagamento.pagamento_familia.toLocaleString('pt-BR')}`);
+                } else {
+                    pagamento.atingiu_meta = false;
+                    pagamento.valor_acima_meta = 0;
+                    pagamento.valor_lavado = 0;
+                    pagamento.pagamento_membro = 0;
+                    pagamento.pagamento_familia = 0;
+                    
+                    if (dinheiroTotal > 0) {
+                        const falta = META_SEMANAL_SUJO - dinheiroTotal;
+                        console.log(`     ❌ Não atingiu meta (faltam ${falta.toLocaleString('pt-BR')})`);
+                    } else {
+                        console.log(`     📭 Sem farm esta semana`);
+                    }
+                }
+            }
+            
+            console.log(`\n📊 Totais finais:`);
+            console.log(`   👥 Total membros: ${todosMembros.length}`);
+            console.log(`   💰 Total dinheiro sujo: ${totalDinheiroSujo.toLocaleString('pt-BR')}`);
+            console.log(`   👛 Total pagamento membros: ${totalPagamentoMembros.toLocaleString('pt-BR')}`);
+            console.log(`   🏠 Total para família: ${totalFamília.toLocaleString('pt-BR')}`);
+            
+            // 6. CRIAR RESUMO DETALHADO
+            console.log('📝 Criando resumo detalhado...');
+            
+            // Criar embed principal
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 RESUMO SEMANAL COMPLETO - Semana ${semanaNumero}`)
+                .setDescription(`**Relatório de TODOS os membros da semana ${semanaNumero} de ${ano}**\n\n💰 **Total geral:** ${totalGeral.toLocaleString('pt-BR')} itens\n👥 **Total membros:** ${todosMembros.length}\n💵 **Total dinheiro sujo:** ${totalDinheiroSujo.toLocaleString('pt-BR')}\n👛 **Pagamento total membros:** ${totalPagamentoMembros.toLocaleString('pt-BR')}\n🏠 **Total família:** ${totalFamília.toLocaleString('pt-BR')}`)
+                .setColor(0x9B59B6)
+                .addFields(
+                    {
+                        name: '💰 REGRAS DE PAGAMENTO',
+                        value: `• Meta semanal: **${META_SEMANAL_SUJO.toLocaleString('pt-BR')}** dinheiro sujo\n• Acima da meta: **${PORCENTAGEM_LAVAGEM*100}%** lavagem\n• Do valor lavado: **${PORCENTAGEM_MEMBRO*100}%** membro | **${PORCENTAGEM_FAMILIA*100}%** família`,
+                        inline: false
+                    }
+                )
+                .setTimestamp()
+                .setFooter({ 
+                    text: `Fechado por: ${interaction.user.username} • ${new Date().toLocaleDateString('pt-BR')}`
+                });
 
-/**
- * Ver comprovantes de um membro
- */
-async function verComprovantesMembro(interaction, membroId) {
-    try {
-        await interaction.deferReply({ flags: 64 });
-        
-        const { data: comprovantes, error } = await supabase
-            .from('comprovantes_pagamento')
-            .select('*')
-            .eq('membro_id', membroId)
-            .order('data_envio', { ascending: false })
-            .limit(10);
-        
-        if (error) {
-            throw error;
-        }
-        
-        if (!comprovantes || comprovantes.length === 0) {
-            return interaction.editReply({
-                content: '📭 Nenhum comprovante encontrado para este membro.'
-            });
-        }
-        
-        const totalPago = comprovantes.reduce((sum, c) => sum + (c.valor_pago || 0), 0);
-        
-        const embed = new EmbedBuilder()
-            .setTitle(`📋 COMPROVANTES - ${comprovantes[0]?.membro_nome || 'Membro'}`)
-            .setColor(0x3498DB)
-            .setDescription(`**Total de comprovantes:** ${comprovantes.length}\n**Total pago:** $${totalPago.toLocaleString('pt-BR')}`)
-            .setFooter({ text: 'Últimos 10 comprovantes' })
-            .setTimestamp();
-        
-        comprovantes.forEach((comp, index) => {
-            embed.addFields({
-                name: `${index + 1}. Semana ${comp.semana_numero}/${comp.ano}`,
-                value: `💰 **Valor:** $${comp.valor_pago?.toLocaleString('pt-BR') || '0'}\n🛠️ **Por:** ${comp.enviado_por_nome}\n📅 **Data:** ${new Date(comp.data_envio).toLocaleDateString('pt-BR')}\n${comp.observacao ? `📝 **Obs:** ${comp.observacao.substring(0, 50)}...` : ''}`,
-                inline: true
-            });
-        });
-        
-        await interaction.editReply({
-            embeds: [embed]
-        });
-        
-    } catch (error) {
-        console.error('❌ Erro ao listar comprovantes:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
-    }
-}
+            // 7. CRIAR TEXTO DETALHADO PARA ANEXO
+            let textoDetalhado = `📊 RESUMO SEMANAL - Semana ${semanaNumero} de ${ano}\n`;
+            textoDetalhado += `📅 Data: ${new Date().toLocaleDateString('pt-BR')}\n`;
+            textoDetalhado += `👤 Fechado por: ${interaction.user.username}\n`;
+            textoDetalhado += `👥 Total membros: ${todosMembros.length}\n`;
+            textoDetalhado += `💰 Total dinheiro sujo: ${totalDinheiroSujo.toLocaleString('pt-BR')}\n`;
+            textoDetalhado += `👛 Pagamento total membros: ${totalPagamentoMembros.toLocaleString('pt-BR')}\n`;
+            textoDetalhado += `🏠 Total família: ${totalFamília.toLocaleString('pt-BR')}\n\n`;
+            textoDetalhado += '='.repeat(50) + '\n\n';
+            textoDetalhado += 'REGRAS DE PAGAMENTO:\n';
+            textoDetalhado += `• Meta semanal: ${META_SEMANAL_SUJO.toLocaleString('pt-BR')} dinheiro sujo\n`;
+            textoDetalhado += `• Acima da meta: ${PORCENTAGEM_LAVAGEM*100}% lavagem\n`;
+            textoDetalhado += `• Do valor lavado: ${PORCENTAGEM_MEMBRO*100}% membro | ${PORCENTAGEM_FAMILIA*100}% família\n\n`;
+            textoDetalhado += '='.repeat(50) + '\n\n';
 
-/**
- * Listar comprovantes por semana (função de compatibilidade)
- */
-async function listarComprovantes(interaction, semanaNumero, ano) {
-    try {
-        await interaction.deferReply({ flags: 64 });
-        
-        const { data: comprovantes, error } = await supabase
-            .from('comprovantes_pagamento')
-            .select('*')
-            .eq('semana_numero', semanaNumero)
-            .eq('ano', ano)
-            .order('data_envio', { ascending: false });
-        
-        if (error) {
-            throw error;
-        }
-        
-        if (!comprovantes || comprovantes.length === 0) {
-            return interaction.editReply({
-                content: `📭 Nenhum comprovante encontrado para a semana ${semanaNumero} de ${ano}.`
-            });
-        }
-        
-        const totalPago = comprovantes.reduce((sum, c) => sum + (c.valor_pago || 0), 0);
-        const membrosUnicos = [...new Set(comprovantes.map(c => c.membro_nome))];
-        
-        const embed = new EmbedBuilder()
-            .setTitle(`📋 COMPROVANTES - Semana ${semanaNumero}/${ano}`)
-            .setColor(0x9B59B6)
-            .setDescription(`**Total de comprovantes:** ${comprovantes.length}\n**Membros pagos:** ${membrosUnicos.length}\n**Total pago:** $${totalPago.toLocaleString('pt-BR')}`)
-            .setFooter({ text: 'Todos os comprovantes da semana' })
-            .setTimestamp();
-        
-        comprovantes.forEach((comp, index) => {
-            if (index < 25) { // Limite do Discord
-                embed.addFields({
-                    name: `💰 ${comp.membro_nome}`,
-                    value: `**Valor:** $${comp.valor_pago?.toLocaleString('pt-BR') || '0'}\n**Por:** ${comp.enviado_por_nome}\n**Data:** ${new Date(comp.data_envio).toLocaleDateString('pt-BR')}\n${comp.observacao ? `**Obs:** ${comp.observacao.substring(0, 100)}...` : ''}`,
-                    inline: true
+            // Adicionar detalhes por membro no embed (limitado a 25 campos)
+            const membrosArray = Object.entries(resumo);
+            const grupos = [];
+            for (let i = 0; i < membrosArray.length; i += 25) {
+                grupos.push(membrosArray.slice(i, i + 25));
+            }
+
+            // Adicionar também no texto detalhado
+            textoDetalhado += 'DETALHES POR MEMBRO:\n\n';
+            
+            for (const [nome, dados] of Object.entries(resumo)) {
+                const pagamento = pagamentos[nome];
+                
+                // Texto para arquivo
+                textoDetalhado += `👤 ${nome}:\n`;
+                textoDetalhado += `  💰 Dinheiro Sujo: ${dados.dinheiro_sujo.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  🔋 Bateria: ${dados.bateria.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  🔌 Placa Circuito: ${dados.placa_circuito.toLocaleString('pt-BR')}\n`;
+                textoDetalhado += `  📊 Total itens: ${dados.total_itens.toLocaleString('pt-BR')}\n`;
+                
+                if (pagamento.atingiu_meta) {
+                    textoDetalhado += `  ✅ Meta: ATINGIDA\n`;
+                    textoDetalhado += `    💰 Acima da meta: ${pagamento.valor_acima_meta.toLocaleString('pt-BR')}\n`;
+                    textoDetalhado += `    🧼 Valor lavado (${PORCENTAGEM_LAVAGEM*100}%): ${pagamento.valor_lavado.toLocaleString('pt-BR')}\n`;
+                    textoDetalhado += `    👛 Pagamento membro (${PORCENTAGEM_MEMBRO*100}%): ${pagamento.pagamento_membro.toLocaleString('pt-BR')}\n`;
+                    textoDetalhado += `    🏠 Para família (${PORCENTAGEM_FAMILIA*100}%): ${pagamento.pagamento_familia.toLocaleString('pt-BR')}\n`;
+                } else {
+                    if (pagamento.dinheiro_sujo_total > 0) {
+                        const falta = META_SEMANAL_SUJO - pagamento.dinheiro_sujo_total;
+                        textoDetalhado += `  ❌ Meta: NÃO ATINGIDA (faltam ${falta.toLocaleString('pt-BR')})\n`;
+                        textoDetalhado += `    👛 Pagamento: 0\n`;
+                    } else {
+                        textoDetalhado += `  📭 Sem farm esta semana\n`;
+                        textoDetalhado += `    👛 Pagamento: 0\n`;
+                    }
+                }
+                textoDetalhado += '\n' + '-'.repeat(40) + '\n\n';
+            }
+
+            // Adicionar primeiro grupo ao embed
+            if (grupos.length > 0) {
+                grupos[0].forEach(([nome, dados]) => {
+                    const pagamento = pagamentos[nome];
+                    let valorPagamento = '💰 Pagamento: **0**';
+                    
+                    if (pagamento.atingiu_meta) {
+                        valorPagamento = `💰 Pagamento: **${pagamento.pagamento_membro.toLocaleString('pt-BR')}**\n( ${pagamento.valor_acima_meta.toLocaleString('pt-BR')} × ${PORCENTAGEM_LAVAGEM*100}% × ${PORCENTAGEM_MEMBRO*100}% )`;
+                    } else if (pagamento.dinheiro_sujo_total > 0) {
+                        const falta = META_SEMANAL_SUJO - pagamento.dinheiro_sujo_total;
+                        valorPagamento = `🎯 Meta não atingida: faltam **${falta.toLocaleString('pt-BR')}**`;
+                    } else {
+                        valorPagamento = '📭 Sem farm esta semana';
+                    }
+                    
+                    embed.addFields({
+                        name: `👤 ${nome}`,
+                        value: `💰 Sujo: **${dados.dinheiro_sujo.toLocaleString('pt-BR')}**\n🔋 Bateria: **${dados.bateria.toLocaleString('pt-BR')}**\n🔌 Placa: **${dados.placa_circuito.toLocaleString('pt-BR')}**\n${valorPagamento}`,
+                        inline: true
+                    });
                 });
             }
-        });
-        
-        await interaction.editReply({
-            embeds: [embed]
-        });
-        
+
+            // 8. ENVIAR NOTIFICAÇÃO DE FECHAMENTO COM BOTÃO "FECHAR FARM"
+            console.log('📢 Enviando notificação de fechamento para todas as pastas...');
+            await enviarNotificacaoFechamento(interaction.client, semanaNumero, ano, resumo);
+
+            // 9. ATUALIZAR STATUS DAS PASTAS
+            console.log('📁 Atualizando status das pastas farm...');
+            const { error: errorUpdate, count: pastasAtualizadas } = await supabase
+                .from('pastas_farm')
+                .update({ 
+                    ativa: false, 
+                    semana_fechada: semanaNumero,
+                    ano_fechada: ano,
+                    updated_at: new Date().toISOString() 
+                })
+                .eq('ativa', true);
+
+            let mensagemPastas = '';
+            if (errorUpdate) {
+                console.error('❌ Erro ao atualizar pastas:', errorUpdate);
+                mensagemPastas = 'Não foi possível atualizar o status das pastas farm.';
+            } else {
+                console.log(`✅ ${pastasAtualizadas || 0} pastas farm marcadas como fechadas`);
+                mensagemPastas = `🔄 ${pastasAtualizadas || 0} pastas foram fechadas.`;
+            }
+
+            // 10. CRIAR REGISTRO DA SEMANA
+            try {
+                const dataInicio = getMonday(data);
+                const dataFim = new Date(dataInicio);
+                dataFim.setDate(dataFim.getDate() + 6);
+
+                const { error: errorSemana } = await supabase
+                    .from('semanas_farm')
+                    .insert([
+                        {
+                            semana_numero: semanaNumero,
+                            ano: ano,
+                            data_inicio: dataInicio.toISOString().split('T')[0],
+                            data_fim: dataFim.toISOString().split('T')[0],
+                            fechada: true,
+                            total_farms: farms?.length || 0,
+                            total_itens: totalGeral,
+                            total_membros: todosMembros.length,
+                            total_dinheiro_sujo: totalDinheiroSujo,
+                            total_pagamento_membros: totalPagamentoMembros,
+                            total_familia: totalFamília,
+                            meta_semanal: META_SEMANAL_SUJO,
+                            porcentagem_lavagem: PORCENTAGEM_LAVAGEM,
+                            porcentagem_membro: PORCENTAGEM_MEMBRO,
+                            porcentagem_familia: PORCENTAGEM_FAMILIA,
+                            fechado_por: interaction.user.id,
+                            fechado_em: new Date().toISOString()
+                        }
+                    ]);
+
+                if (errorSemana) {
+                    console.log('ℹ️  Não foi possível registrar a semana:', errorSemana.message);
+                } else {
+                    console.log('✅ Semana registrada na tabela semanas_farm');
+                }
+            } catch (semanaError) {
+                console.log('ℹ️  Tabela semanas_farm não existe ou erro:', semanaError.message);
+            }
+
+            // 11. CRIAR ARQUIVO DE RESUMO
+            const buffer = Buffer.from(textoDetalhado, 'utf-8');
+            const attachment = new AttachmentBuilder(buffer, { 
+                name: `resumo_semana_${semanaNumero}_${ano}.txt`,
+                description: `Resumo detalhado da semana ${semanaNumero}`
+            });
+
+            // 12. CRIAR BOTÕES PARA GERÊNCIA
+            const botoesGerencia = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`enviar_comprovante_${semanaNumero}_${ano}`)
+                        .setLabel('📎 ENVIAR COMPROVANTE')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('📎'),
+                    new ButtonBuilder()
+                        .setCustomId(`ver_detalhes_${semanaNumero}_${ano}`)
+                        .setLabel('📊 VER DETALHES')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji('📊'),
+                    new ButtonBuilder()
+                        .setCustomId(`gerar_pagamentos_${semanaNumero}_${ano}`)
+                        .setLabel('💰 GERAR PAGAMENTOS')
+                        .setStyle(ButtonStyle.Success)
+                        .setEmoji('💰')
+                );
+
+            // 13. ENVIAR RESUMO FINAL
+            await interaction.editReply({
+                embeds: [embed],
+                content: `✅ **SEMANA ${semanaNumero} FECHADA COM SUCESSO!**\n\n📊 Relatório semanal completo gerado.\n👥 **${todosMembros.length} membros** incluídos no relatório.\n📝 Verifique o arquivo anexo para detalhes completos.\n\n${mensagemPastas}`,
+                files: [attachment],
+                components: [botoesGerencia]
+            });
+
+            console.log(`✅ /fecharpastas concluído com sucesso!`);
+
+        } catch (error) {
+            console.error('❌ Erro ao executar /fecharpastas:', error);
+            await interaction.editReply({
+                content: `❌ **Erro ao fechar pastas:**\n\`\`\`${error.message || 'Erro desconhecido'}\`\`\`\n\n📞 Contate o desenvolvedor.`,
+                embeds: []
+            });
+        }
+    }
+};
+
+// Função para enviar notificação para todas as pastas COM BOTÃO "FECHAR FARM"
+async function enviarNotificacaoFechamento(client, semanaNumero, ano, resumo) {
+    try {
+        // Buscar todas as pastas farm ativas
+        const { data: pastas, error } = await supabase
+            .from('pastas_farm')
+            .select('canal_id, membros(id, nome, discord_id)')
+            .eq('ativa', true);
+
+        if (error || !pastas || pastas.length === 0) {
+            console.log('ℹ️  Nenhuma pasta farm ativa encontrada.');
+            return;
+        }
+
+        console.log(`📢 Enviando notificação para ${pastas.length} pastas...`);
+
+        const notificacaoEmbed = new EmbedBuilder()
+            .setTitle('🔒 FARM SEMANAL FECHADO')
+            .setDescription(`**A semana ${semanaNumero} de ${ano} foi oficialmente fechada!**\n\n📊 Todos os farms desta semana foram contabilizados.\n💰 **O pagamento será processado em breve.**\n\n⏳ Aguarde as instruções de pagamento da gerência.`)
+            .setColor(0xFF0000)
+            .setFooter({ text: 'Sistema de Farm - Facção' })
+            .setTimestamp();
+
+        // Criar botão para FECHAR FARM (apenas para gerência)
+        let enviadas = 0;
+        for (const pasta of pastas) {
+            try {
+                const canal = await client.channels.fetch(pasta.canal_id);
+                if (canal) {
+                    const membroNome = pasta.membros?.nome || 'Membro';
+                    const membroDiscordId = pasta.membros?.discord_id;
+                    
+                    // Verificar se o membro tem farm na semana
+                    const temFarm = Object.values(resumo).some(m => 
+                        m.membro_id === pasta.membros?.id && m.dinheiro_sujo > 0
+                    );
+                    
+                    // Criar botão "FECHAR FARM" específico para este canal
+                    const botaoFecharFarm = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(`fechar_farm_${semanaNumero}_${ano}_${pasta.canal_id}`)
+                                .setLabel('🔒 FECHAR FARM')
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('🔒')
+                                .setDisabled(!temFarm) // Desabilitar se não tem farm
+                        );
+                    
+                    await canal.send({
+                        content: `@here **ATENÇÃO ${membroNome}!**\n\nO farm da semana ${semanaNumero} foi fechado. ${temFarm ? 'Você tem pagamento pendente!' : 'Você não teve farm esta semana.'}`,
+                        embeds: [notificacaoEmbed],
+                        components: temFarm ? [botaoFecharFarm] : []
+                    });
+                    
+                    enviadas++;
+                    console.log(`   ✅ Notificação enviada para ${membroNome} ${temFarm ? '(com pagamento)' : '(sem pagamento)'}`);
+                }
+            } catch (canalError) {
+                console.log(`   ❌ Erro ao enviar para canal ${pasta.canal_id}:`, canalError.message);
+            }
+        }
+
+        console.log(`✅ ${enviadas}/${pastas.length} notificações enviadas com sucesso.`);
+
     } catch (error) {
-        console.error('❌ Erro ao listar comprovantes:', error);
-        await interaction.editReply({
-            content: `❌ Erro: ${error.message}`
-        });
+        console.error('❌ Erro ao enviar notificações:', error);
     }
 }
 
-/**
- * Função antiga para manter compatibilidade
- */
-async function mostrarModalComprovante(interaction) {
-    console.log('⚠️ Usando função de comprovante antiga (manter compatibilidade)');
-    return mostrarModalComprovanteDropdown(interaction);
+// Função auxiliar para obter segunda-feira
+function getMonday(d) {
+    d = new Date(d);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.setDate(diff));
 }
 
-async function processarModalComprovante(interaction) {
-    console.log('⚠️ Processando modal de comprovante antigo (manter compatibilidade)');
-    return processarModalComprovanteDropdown(interaction);
-}
-
-// Função auxiliar para obter número da semana
+// Função para obter número da semana
 function getWeekNumber(d) {
     d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
@@ -470,13 +536,3 @@ function getWeekNumber(d) {
     const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
     return weekNo;
 }
-
-module.exports = {
-    mostrarModalComprovanteDropdown,
-    processarModalComprovanteDropdown,
-    mostrarModalComprovante, // Compatibilidade
-    processarModalComprovante, // Compatibilidade
-    fecharFarm,
-    verComprovantesMembro,
-    listarComprovantes
-};
