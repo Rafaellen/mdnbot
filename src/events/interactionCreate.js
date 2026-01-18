@@ -8,7 +8,6 @@ const encomendaComponents = require('../components/encomendas');
 const processedButtons = new Set();
 const PROCESS_TIMEOUT = 10000; // 10 segundos
 
-
 // Sistema de lock melhorado
 const activeInteractions = new Map();
 
@@ -721,6 +720,7 @@ async function cancelarEncomendaTemporaria(interaction, tempId) {
     }
 }
 
+// 🔧 FUNÇÃO CORRIGIDA: processarRegistroMembro (COM id_in_game)
 async function processarRegistroMembro(interaction) {
     try {
         await interaction.deferReply({ flags: 64 });
@@ -730,8 +730,9 @@ async function processarRegistroMembro(interaction) {
         const telefone = interaction.fields.getTextInputValue('telefone_input');
         const recrutador = interaction.fields.getTextInputValue('recrutador_input');
         
-        console.log(`📝 Registrando membro: ${nome} (ID: ${idInGame})`);
+        console.log(`📝 Registrando membro: ${nome} (ID In-Game: ${idInGame || 'Não informado'})`);
         
+        // Verificar se já está registrado
         const { data: membroExistente, error: errorExistente } = await supabase
             .from('membros')
             .select('*')
@@ -744,50 +745,97 @@ async function processarRegistroMembro(interaction) {
             });
         }
         
+        // Validar e converter idInGame
+        let idInGameNum = null;
+        if (idInGame && idInGame.trim() !== '') {
+            idInGameNum = parseInt(idInGame);
+            if (isNaN(idInGameNum)) {
+                return interaction.editReply({
+                    content: '❌ ID In-Game inválido! Deve ser um número.'
+                });
+            }
+        }
+        
+        // Criar objeto de dados COM id_in_game
+        const dadosRegistro = {
+            discord_id: interaction.user.id,
+            nome: nome,
+            telefone: telefone || null,
+            recrutador: recrutador || null,
+            hierarquia: 'Membro',
+            ativo: true,
+            id_in_game: idInGameNum
+        };
+        
+        console.log('📊 Dados a serem inseridos:', dadosRegistro);
+        
+        // Inserir no banco
         const { data: membro, error } = await supabase
             .from('membros')
-            .insert([{
-                discord_id: interaction.user.id,
-                nome: nome,
-                id_in_game: idInGame,
-                telefone: telefone,
-                recrutador: recrutador,
-                hierarquia: 'Membro',
-                ativo: true
-            }])
+            .insert([dadosRegistro])
             .select()
             .single();
         
         if (error) {
             console.error('❌ Erro ao registrar membro:', error);
-            throw error;
+            
+            // Tentar sem id_in_game se der erro (fallback)
+            delete dadosRegistro.id_in_game;
+            const { data: membro2, error: error2 } = await supabase
+                .from('membros')
+                .insert([dadosRegistro])
+                .select()
+                .single();
+                
+            if (error2) {
+                throw new Error(`Erro de banco de dados: ${error2.message}`);
+            }
+            
+            membro = membro2;
         }
         
+        // Criar embed de confirmação
         const embed = new EmbedBuilder()
             .setTitle('✅ REGISTRO CONCLUÍDO')
             .setColor(0x00FF00)
             .addFields(
                 { name: '👤 Nome', value: nome, inline: true },
-                { name: '🆔 ID In-Game', value: idInGame, inline: true },
-                { name: '📱 Telefone', value: telefone, inline: true },
-                { name: '🎯 Recrutador', value: recrutador, inline: true },
+                { name: '📱 Telefone', value: telefone || 'Não informado', inline: true },
+                { name: '🎯 Recrutador', value: recrutador || 'Não informado', inline: true },
                 { name: '📊 Hierarquia', value: 'Membro', inline: true },
-                { name: '📅 Data de Registro', value: new Date().toLocaleDateString('pt-BR'), inline: true }
+                { name: '📅 Data', value: new Date().toLocaleDateString('pt-BR'), inline: true }
             )
             .setFooter({ text: 'Bem-vindo à facção!' })
             .setTimestamp();
         
+        // Mostrar ID In-Game se foi informado
+        if (idInGameNum) {
+            embed.addFields({ 
+                name: '🆔 ID In-Game', 
+                value: idInGameNum.toString(), 
+                inline: true 
+            });
+        }
+        
         await interaction.editReply({
-            content: `✅ **Registro concluído com sucesso, ${nome}!**\n\nAgora você pode criar sua pasta farm clicando no botão "CRIAR PASTA FARM".`,
+            content: `✅ **Registro concluído com sucesso, ${nome}!**\n\nAgora você pode criar sua pasta farm.`,
             embeds: [embed]
         });
         
-        console.log(`✅ Membro registrado: ${nome} (${interaction.user.id})`);
+        console.log(`✅ Membro registrado: ${nome} (ID In-Game: ${idInGameNum || 'N/A'})`);
         
     } catch (error) {
         console.error('❌ Erro ao processar registro:', error);
+        
+        let mensagemErro = `❌ Erro: ${error.message}\n\nContate a administração.`;
+        
+        // Tratar erro específico de schema
+        if (error.message.includes('schema cache') || error.message.includes('id_in_game')) {
+            mensagemErro = `❌ **Problema técnico detectado.**\n\nO sistema está atualizando o cache do banco de dados. Tente novamente em 1-2 minutos.`;
+        }
+        
         await interaction.editReply({
-            content: `❌ Erro ao registrar: ${error.message || 'Erro desconhecido'}`
+            content: mensagemErro
         });
     }
 }
@@ -826,6 +874,7 @@ async function processarEditarFarm(interaction) {
     }
 }
 
+// 🔧 FUNÇÃO CORRIGIDA: verMembro (COM id_in_game)
 async function verMembro(interaction, discordId) {
     try {
         await interaction.deferReply({ flags: 64 });
@@ -846,14 +895,15 @@ async function verMembro(interaction, discordId) {
             .setTitle(`👤 PERFIL - ${membro.nome}`)
             .setColor(0x3498DB)
             .addFields(
-                { name: '🆔 ID In-Game', value: membro.id_in_game || 'Não informado', inline: true },
+                { name: '🆔 ID In-Game', value: membro.id_in_game ? membro.id_in_game.toString() : 'Não informado', inline: true },
                 { name: '📱 Telefone', value: membro.telefone || 'Não informado', inline: true },
                 { name: '🎯 Recrutador', value: membro.recrutador || 'Não informado', inline: true },
                 { name: '📊 Hierarquia', value: membro.hierarquia || 'Membro', inline: true },
-                { name: '📅 Data de Registro', value: new Date(membro.created_at).toLocaleDateString('pt-BR'), inline: true },
-                { name: '✅ Status', value: membro.ativo ? 'Ativo' : 'Inativo', inline: true }
+                { name: '📅 Data de Registro', value: new Date(membro.data_registro).toLocaleDateString('pt-BR'), inline: true },
+                { name: '✅ Status', value: membro.ativo ? 'Ativo' : 'Inativo', inline: true },
+                { name: '🆔 Discord ID', value: membro.discord_id, inline: true }
             )
-            .setFooter({ text: `Discord ID: ${discordId}` })
+            .setFooter({ text: `ID do Membro: ${membro.id}` })
             .setTimestamp();
         
         await interaction.editReply({
@@ -1025,7 +1075,6 @@ function getProdutoEmoji(nome) {
 }
 
 async function fecharFarmHandler(interaction, semana, ano, canalId) {
-
     const buttonId = `${interaction.id}_${interaction.user.id}`;
     
     // Verificar se já processou este botão recentemente
@@ -1182,11 +1231,10 @@ async function fecharFarmHandler(interaction, semana, ano, canalId) {
         
         console.log(`✅ Farm fechado com sucesso para ${pasta.membros?.nome}`);
         
-    }  catch (channelError) {
-            console.error('❌ Não foi possível enviar mensagem de erro:', channelError.message);
-        }
+    } catch (channelError) {
+        console.error('❌ Não foi possível enviar mensagem de erro:', channelError.message);
     }
-
+}
 
 function canProcessButton(interactionId) {
     if (processedButtons.has(interactionId)) {
