@@ -731,7 +731,7 @@ async function cancelarEncomendaTemporaria(interaction, tempId) {
     }
 }
 
-// 🔧 FUNÇÃO CORRIGIDA: processarRegistroMembro (COM id_in_game)
+// 🔧 FUNÇÃO CORRIGIDA: processarRegistroMembro (COM id_in_game e atribuição de cargo)
 async function processarRegistroMembro(interaction) {
     try {
         // Verificar se a interação ainda é válida
@@ -786,7 +786,8 @@ async function processarRegistroMembro(interaction) {
             recrutador: recrutador || null,
             hierarquia: 'Membro',
             ativo: true,
-            id_in_game: idInGameNum
+            id_in_game: idInGameNum,
+            cargo_id: process.env.CARGO_MEMBRO_ID
         };
         
         console.log('📊 Dados a serem inseridos:', dadosRegistro);
@@ -816,6 +817,33 @@ async function processarRegistroMembro(interaction) {
             membro = membro2;
         }
         
+        // 1. ATRIBUIR CARGO DE MEMBRO NO DISCORD
+        try {
+            const guild = await interaction.client.guilds.fetch(process.env.GUILD_ID);
+            const member = await guild.members.fetch(interaction.user.id);
+            const cargoMembro = await guild.roles.fetch(process.env.CARGO_MEMBRO_ID);
+            
+            if (cargoMembro) {
+                await member.roles.add(cargoMembro.id);
+                console.log(`✅ Cargo de membro atribuído a ${member.user.tag}`);
+            }
+            
+            // 2. ATUALIZAR NICKNAME (se o membro tiver permissão)
+            const novoNickname = `${nome} - ${idInGameNum || 'ID'}`;
+            try {
+                await member.setNickname(novoNickname);
+                console.log(`✅ Nickname atualizado para: ${novoNickname}`);
+            } catch (nickError) {
+                console.log(`⚠️ Não foi possível atualizar nickname: ${nickError.message}`);
+            }
+            
+        } catch (discordError) {
+            console.error('❌ Erro ao atribuir cargo/mudar nickname:', discordError.message);
+        }
+        
+        // 3. ENVIAR LOG PARA CANAL DE REGISTRO
+        await enviarLogRegistro(interaction.client, membro, interaction.user, idInGameNum);
+        
         // Criar embed de confirmação
         const embed = new EmbedBuilder()
             .setTitle('✅ REGISTRO CONCLUÍDO')
@@ -825,7 +853,8 @@ async function processarRegistroMembro(interaction) {
                 { name: '📱 Telefone', value: telefone || 'Não informado', inline: true },
                 { name: '🎯 Recrutador', value: recrutador || 'Não informado', inline: true },
                 { name: '📊 Hierarquia', value: 'Membro', inline: true },
-                { name: '📅 Data', value: new Date().toLocaleDateString('pt-BR'), inline: true }
+                { name: '📅 Data', value: new Date().toLocaleDateString('pt-BR'), inline: true },
+                { name: '🎫 Cargo', value: '✅ Atribuído', inline: true }
             )
             .setFooter({ text: 'Bem-vindo à facção!' })
             .setTimestamp();
@@ -840,7 +869,7 @@ async function processarRegistroMembro(interaction) {
         }
         
         await interaction.editReply({
-            content: `✅ **Registro concluído com sucesso, ${nome}!**\n\nAgora você pode criar sua pasta farm.`,
+            content: `✅ **Registro concluído com sucesso, ${nome}!**\n\n• Cargo "Membro" atribuído ✅\n• Nickname atualizado ✅\n• Log registrado ✅\n\nAgora você pode criar sua pasta farm.`,
             embeds: [embed]
         });
         
@@ -864,6 +893,119 @@ async function processarRegistroMembro(interaction) {
         } catch (replyError) {
             console.error('❌ Não foi possível responder ao erro:', replyError.message);
         }
+    }
+}
+
+// Função para enviar log de registro para canal específico
+async function enviarLogRegistro(client, membro, usuarioDiscord, idInGame) {
+    try {
+        const canalLogId = process.env.CANAL_LOG_REGISTROS_ID;
+        if (!canalLogId) {
+            console.log('⚠️ Canal de log de registros não configurado.');
+            return;
+        }
+        
+        const guild = await client.guilds.fetch(process.env.GUILD_ID);
+        const canalLog = await guild.channels.fetch(canalLogId);
+        
+        if (!canalLog) {
+            console.log('⚠️ Canal de log de registros não encontrado.');
+            return;
+        }
+        
+        // Buscar informações do membro no servidor
+        let memberDiscord;
+        try {
+            memberDiscord = await guild.members.fetch(membro.discord_id);
+        } catch (error) {
+            console.log('⚠️ Membro não encontrado no servidor (ainda):', error.message);
+        }
+        
+        // Criar embed detalhado
+        const embedLog = new EmbedBuilder()
+            .setTitle('📋 NOVO MEMBRO REGISTRADO')
+            .setColor(0x00AE86)
+            .setThumbnail(usuarioDiscord.displayAvatarURL())
+            .addFields(
+                { name: '👤 Nome', value: membro.nome, inline: true },
+                { name: '🆔 ID In-Game', value: idInGame ? idInGame.toString() : 'Não informado', inline: true },
+                { name: '📱 Telefone', value: membro.telefone || 'Não informado', inline: true },
+                { name: '🎯 Recrutador', value: membro.recrutador || 'Não informado', inline: true },
+                { name: '📊 Hierarquia', value: membro.hierarquia || 'Membro', inline: true },
+                { name: '🆔 Discord ID', value: membro.discord_id, inline: true },
+                { name: '📅 Data de Registro', value: new Date().toLocaleString('pt-BR'), inline: true },
+                { name: '🛠️ Registrado por', value: usuarioDiscord.username, inline: true }
+            )
+            .setFooter({ text: `ID do Banco: ${membro.id}` })
+            .setTimestamp();
+        
+        // Adicionar informações do Discord se disponíveis
+        if (memberDiscord) {
+            embedLog.addFields(
+                { name: '📅 Entrou no Discord', value: new Date(memberDiscord.joinedAt).toLocaleDateString('pt-BR'), inline: true },
+                { name: '🎫 Cargo Atribuído', value: '✅ Membro', inline: true },
+                { name: '👥 Cargos no Discord', value: memberDiscord.roles.cache.size > 1 ? 
+                    memberDiscord.roles.cache.filter(r => r.id !== guild.id).map(r => r.name).join(', ') : 'Nenhum cargo adicional', 
+                    inline: false }
+            );
+            
+            // Verificar se nickname foi atualizado
+            if (memberDiscord.nickname) {
+                embedLog.addFields({ name: '🏷️ Nickname', value: memberDiscord.nickname, inline: true });
+            }
+        }
+        
+        // Botões de ação rápida
+        const botoesLog = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`ver_membro_${membro.discord_id}`)
+                    .setLabel('🔍 VER PERFIL')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji('🔍'),
+                new ButtonBuilder()
+                    .setCustomId(`promover_${membro.discord_id}`)
+                    .setLabel('⬆️ PROMOVER')
+                    .setStyle(ButtonStyle.Primary)
+                    .setEmoji('⬆️'),
+                new ButtonBuilder()
+                    .setStyle(ButtonStyle.Link)
+                    .setLabel('💬 ENVIAR DM')
+                    .setURL(`discord://-/users/${membro.discord_id}`)
+                    .setEmoji('💬')
+            );
+        
+        await canalLog.send({
+            content: `📋 **NOVO MEMBRO REGISTRADO!** <@&${process.env.CARGO_GERENCIA_ID}>`,
+            embeds: [embedLog],
+            components: [botoesLog]
+        });
+        
+        console.log(`✅ Log de registro enviado para canal ${canalLog.name}: ${membro.nome}`);
+        
+        // Salvar log no banco de dados
+        try {
+            await supabase
+                .from('logs_registro')
+                .insert([
+                    {
+                        membro_id: membro.id,
+                        discord_id: membro.discord_id,
+                        nome: membro.nome,
+                        telefone: membro.telefone || null,
+                        recrutador: membro.recrutador || null,
+                        hierarquia: membro.hierarquia || 'Membro',
+                        registrado_por: usuarioDiscord.id,
+                        tipo_acao: 'registro'
+                    }
+                ]);
+            console.log('✅ Log salvo no banco de dados');
+        } catch (logError) {
+            console.log('⚠️ Não foi possível salvar log no banco:', logError.message);
+        }
+        
+    } catch (error) {
+        console.error('❌ Erro ao enviar log de registro:', error);
     }
 }
 

@@ -25,12 +25,13 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMembers,  // IMPORTANTE: Para gerenciar membros
+        GatewayIntentBits.GuildPresences,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.DirectMessages
     ],
-    partials: ['CHANNEL', 'MESSAGE', 'REACTION']
+    partials: ['CHANNEL', 'MESSAGE', 'REACTION', 'GUILD_MEMBER']
 });
 
 // Coleções para comandos
