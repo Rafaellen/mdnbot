@@ -47,18 +47,28 @@ console.log('🚀 Iniciando bot para Railway...');
 async function testarSupabase() {
     console.log('🔗 Testando conexão com Supabase...');
     try {
+        const supabase = require('./src/database/supabase');
+        
+        // Verificar se supabase é uma função válida
+        if (typeof supabase.from !== 'function') {
+            console.error('❌ Erro: supabase não foi inicializado corretamente');
+            console.log('⚠️ Verifique as credenciais SUPABASE_URL e SUPABASE_KEY');
+            return;
+        }
+        
         const { data, error } = await supabase
             .from('membros')
             .select('count', { count: 'exact', head: true });
         
         if (error) {
             console.error('❌ Erro no Supabase:', error.message);
-            console.log('⚠️  O bot continuará, mas funcionalidades de banco podem não funcionar.');
+            console.log('⚠️ O bot continuará, mas funcionalidades de banco podem não funcionar.');
         } else {
             console.log('✅ Supabase conectado com sucesso!');
         }
     } catch (error) {
         console.error('❌ Falha ao testar Supabase:', error.message);
+        console.log('⚠️ Verifique as variáveis de ambiente no Railway');
     }
 }
 

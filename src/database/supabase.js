@@ -3,24 +3,48 @@ const { createClient } = require('@supabase/supabase-js');
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 
-// 🔧 SOLUÇÃO: Forçar atualização do cache do esquema
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false
-  },
-  db: {
-    schema: 'public'
-  },
-  global: {
-    headers: {
-      'x-client-info': 'discord-bot/1.0',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0'
+// 🔧 Criar cliente Supabase
+let supabase;
+
+try {
+    if (!supabaseUrl || !supabaseKey) {
+        throw new Error('Credenciais do Supabase não encontradas');
     }
-  }
-});
+    
+    supabase = createClient(supabaseUrl, supabaseKey, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false
+        },
+        db: {
+            schema: 'public'
+        },
+        global: {
+            headers: {
+                'x-client-info': 'discord-bot/1.0',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            }
+        }
+    });
+    
+    console.log('✅ Cliente Supabase inicializado');
+} catch (error) {
+    console.error('❌ Erro ao inicializar Supabase:', error.message);
+    // Criar um objeto fallback para evitar crash
+    supabase = {
+        from: () => ({
+            select: () => ({ 
+                eq: () => ({ 
+                    single: () => ({ data: null, error: new Error('Supabase não inicializado') })
+                }),
+                insert: () => ({ select: () => ({ single: () => ({ data: null, error: new Error('Supabase não inicializado') }) }) }),
+                update: () => ({ eq: () => ({ data: null, error: new Error('Supabase não inicializado') }) })
+            })
+        })
+    };
+}
 
 // Função para verificar e atualizar o esquema
 async function verificarEAtualizarEsquema() {
@@ -105,18 +129,40 @@ async function atualizarCacheSupabase() {
     }
 }
 
-// Executar verificações ao carregar o módulo
+// Testar conexão
+async function testarConexaoSupabase() {
+    try {
+        console.log('🔗 Testando conexão com Supabase...');
+        const { data, error } = await supabase
+            .from('membros')
+            .select('count', { count: 'exact', head: true });
+        
+        if (error) {
+            console.error('❌ Erro na conexão com Supabase:', error.message);
+            return false;
+        } else {
+            console.log('✅ Conexão com Supabase estabelecida!');
+            return true;
+        }
+    } catch (error) {
+        console.error('❌ Falha ao testar Supabase:', error.message);
+        return false;
+    }
+}
+
+// Executar verificações após um delay
 setTimeout(() => {
     console.log('\n🔍 Iniciando verificação do banco de dados...');
-    verificarEAtualizarEsquema().then(() => {
-        setTimeout(() => {
-            atualizarCacheSupabase();
-        }, 1000);
+    testarConexaoSupabase().then(sucesso => {
+        if (sucesso) {
+            verificarEAtualizarEsquema().then(() => {
+                setTimeout(() => {
+                    atualizarCacheSupabase();
+                }, 1000);
+            });
+        }
     });
-}, 2000);
+}, 3000);
 
-module.exports = {
-    supabase,
-    atualizarCacheSupabase,
-    verificarEAtualizarEsquema
-};
+// Exportar apenas o cliente supabase
+module.exports = supabase;

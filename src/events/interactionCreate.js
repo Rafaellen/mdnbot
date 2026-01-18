@@ -44,6 +44,12 @@ async function checkInteraction(interaction) {
 module.exports = {
     name: Events.InteractionCreate,
     async execute(interaction, client) {
+        // Verificar se a interação ainda é válida
+        if (!interaction.isCommand() && !interaction.isButton() && !interaction.isModalSubmit() && !interaction.isStringSelectMenu()) {
+            console.log(`⚠️ Interação inválida ou expirada: ${interaction.type}`);
+            return;
+        }
+        
         // Verificar se é uma interação duplicada
         if (!(await checkInteraction(interaction))) {
             return;
@@ -358,6 +364,11 @@ async function handleModal(interaction, client) {
             const observacoes = interaction.fields.getTextInputValue('observacoes_input') || '';
             
             console.log(`👤 Cliente: ${clienteNome}, 📝 Obs: ${observacoes || 'Nenhuma'}`);
+            
+            // Verificar se supabase está funcionando
+            if (typeof supabase.from !== 'function') {
+                throw new Error('Banco de dados não está disponível');
+            }
             
             const { data: produtos, error } = await supabase
                 .from('produtos')
@@ -723,6 +734,12 @@ async function cancelarEncomendaTemporaria(interaction, tempId) {
 // 🔧 FUNÇÃO CORRIGIDA: processarRegistroMembro (COM id_in_game)
 async function processarRegistroMembro(interaction) {
     try {
+        // Verificar se a interação ainda é válida
+        if (!interaction.isModalSubmit()) {
+            console.log('⚠️ Interação de modal expirada');
+            return;
+        }
+        
         await interaction.deferReply({ flags: 64 });
         
         const idInGame = interaction.fields.getTextInputValue('id_input');
@@ -731,6 +748,11 @@ async function processarRegistroMembro(interaction) {
         const recrutador = interaction.fields.getTextInputValue('recrutador_input');
         
         console.log(`📝 Registrando membro: ${nome} (ID In-Game: ${idInGame || 'Não informado'})`);
+        
+        // Verificar se supabase está funcionando
+        if (typeof supabase.from !== 'function') {
+            throw new Error('Banco de dados não está disponível');
+        }
         
         // Verificar se já está registrado
         const { data: membroExistente, error: errorExistente } = await supabase
@@ -827,16 +849,21 @@ async function processarRegistroMembro(interaction) {
     } catch (error) {
         console.error('❌ Erro ao processar registro:', error);
         
-        let mensagemErro = `❌ Erro: ${error.message}\n\nContate a administração.`;
-        
-        // Tratar erro específico de schema
-        if (error.message.includes('schema cache') || error.message.includes('id_in_game')) {
-            mensagemErro = `❌ **Problema técnico detectado.**\n\nO sistema está atualizando o cache do banco de dados. Tente novamente em 1-2 minutos.`;
+        try {
+            // Tentar responder mesmo com erro
+            if (interaction.deferred || interaction.replied) {
+                await interaction.editReply({
+                    content: `❌ Erro ao registrar: ${error.message}\n\nContate a administração.`
+                });
+            } else {
+                await interaction.reply({
+                    content: `❌ Erro ao registrar: ${error.message}\n\nContate a administração.`,
+                    flags: 64
+                });
+            }
+        } catch (replyError) {
+            console.error('❌ Não foi possível responder ao erro:', replyError.message);
         }
-        
-        await interaction.editReply({
-            content: mensagemErro
-        });
     }
 }
 
